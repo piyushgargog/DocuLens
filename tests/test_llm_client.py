@@ -36,3 +36,23 @@ def test_refuses_when_passages_dont_support_an_answer():
     ]
     answer = ask("What is the capital of France?", passages)
     assert "could not find" in answer.lower()
+
+
+def test_single_turn_prompt_is_unchanged_without_history():
+    from llm_client import SYSTEM_PROMPT, build_messages
+
+    messages = build_messages("q?", [{"page": 1, "text": "t"}])
+    assert messages[0]["content"] == SYSTEM_PROMPT
+    assert len(messages) == 2
+    assert "[Page 1] t" in messages[1]["content"]
+
+
+def test_history_turns_and_document_labels_are_included():
+    from llm_client import HISTORY_RULE, build_messages
+
+    history = [{"question": "first?", "answer": "first answer"}]
+    messages = build_messages("second?", [{"page": 2, "text": "t", "doc": "a.pdf"}], history)
+    assert messages[0]["content"].endswith(HISTORY_RULE)
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    assert messages[2]["content"] == "first answer"
+    assert "[a.pdf, Page 2] t" in messages[3]["content"]
