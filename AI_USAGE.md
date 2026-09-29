@@ -22,17 +22,20 @@ the end.
 ## Implementation Phase
 
 - All source files (`pdf_loader.py`, `chunker.py`, `embedder.py`,
-  `vector_store.py`, `llm_client.py`, `pipeline.py`, `app.py`,
-  `evaluate.py`) were drafted by Claude Code directly from the approved
+  `vector_store.py`, `llm_client.py`, `pipeline.py`, `evaluate.py`, and
+  originally a Streamlit `app.py`, later replaced by `main.py` + `static/`
+  — see "UI/Architecture Migration" below) were drafted by Claude Code
+  directly from the approved
   `PROJECT_SPEC.md`/`ARCHITECTURE.md`/`IMPLEMENTATION_PLAN.md`, then
   actually run and tested (see `DECISIONS.md`'s development log) rather
   than assumed to work.
 - The user made two explicit implementation-affecting decisions during
-  this phase: (1) keep chunk_size/chunk_overlap/top_k configurable but
-  collapse them into an "Advanced settings" expander so the default UI
-  stays simple; (2) require a dedicated `evaluate.py` script for the
-  two-config comparison instead of relying only on manual UI clicking, so
-  the comparison is reproducible.
+  this phase: (1) keep chunk_size/chunk_overlap/top_k configurable in the
+  pipeline (initially via an "Advanced settings" expander in the
+  Streamlit UI; after the FastAPI migration they are no longer in the UI
+  and are used only by `evaluate.py`); (2) require a dedicated
+  `evaluate.py` script for the two-config comparison instead of relying
+  only on manual UI clicking, so the comparison is reproducible.
 - The user supplied real API credentials (OpenAI, then Groq after the
   OpenAI key turned out to have no billing credits) directly in chat for
   Claude Code to place into a local, gitignored `.env` file. Keys were
@@ -168,6 +171,29 @@ the end.
   local measurement, not a live one — and flagged the SSH loss as an
   open item for the user to check, rather than guessing at a cause.
 
+## Dependency Maintenance
+
+- Five routine Dependabot version-floor bumps (`pytest`, `requests`,
+  `pymupdf`, `uvicorn`, `faiss-cpu`) were reviewed and merged only after
+  CI passed on each; one had a `requirements.txt` merge conflict that
+  Dependabot's own rebase resolved. No source code changed, so no
+  redeploy was needed. Released as `v1.1.2`. Details are in
+  `DECISIONS.md` (2026-09-22).
+
+## What the author must be able to explain
+
+AI wrote most of the code here, so this lists the parts that must be
+understood and explainable without AI help (the task requires it):
+
+- **Chunking** (`chunker.py`): character sliding window per page with
+  overlap, why chunk size mattered more than top-k in the A/B evaluation.
+- **Embedding + retrieval** (`embedder.py`, `vector_store.py`): MiniLM
+  vectors are normalized, so FAISS inner product equals cosine similarity;
+  `IndexFlatIP` is exact search.
+- **Grounding** (`llm_client.py`): the system prompt restricts answers to
+  fenced passages and defines the exact "not found" refusal string.
+- **Why no LangChain**: see `DECISIONS.md` decision #1 and its outcome.
+
 ## Principles followed
 
 - No fabricated test results, decisions, or requirements — ever.
@@ -175,3 +201,27 @@ the end.
   project's actual requirements before implementation proceeds.
 - This file is updated alongside the work, not reconstructed after the
   fact.
+
+## Bug-Fix and Bonus-Feature Pass (2026-09-29)
+
+- The user asked Claude Code to fix any errors, close gaps against the task
+  brief, and add improvements of its choice. It compared the repository to
+  the brief first, then read every source file for defects even though all
+  tests passed.
+- It found and fixed real bugs (blocking calls on the event loop, a 500 on
+  invalid JSON, errors sent with HTTP 200, unbounded session memory, a
+  frontend that froze on non-JSON proxy errors). Each is listed in
+  `DECISIONS.md` with what went wrong.
+- It implemented the brief's three bonus features (multiple documents,
+  conversation history, document summary) and chose the simpler option at
+  each step with the rejected alternative recorded (per-document indexes
+  vs. one merged index; query concatenation vs. LLM query rewriting;
+  sampled vs. map-reduce summary). Rate limits drove the last two choices.
+- It kept the single-document path identical and added tests proving it,
+  so the earlier Config A/B evaluation still holds without a re-run.
+- It checked a suspicious result before reporting it: a follow-up about
+  Jupiter's moons was refused, and the document text showed Jupiter's moons
+  are never mentioned, so the refusal was correct. It then re-tested
+  follow-ups with a question the document can answer (Saturn).
+- It did not re-run the evaluation on an organizer-provided document,
+  since none is in the repository; that item stays open.
