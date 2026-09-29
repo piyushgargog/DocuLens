@@ -16,13 +16,15 @@ that change.
 ## Components
 
 1. **Backend / API** (`main.py`, FastAPI)
-   Exposes `POST /api/ingest`, `POST /api/ask`, `POST /api/remove`, and
-   serves the static frontend from the same origin (no CORS needed). Holds
-   one `IndexState` per browser session in an in-memory dict, keyed by an
-   `httponly` cookie; sessions expire after 2 hours of inactivity. Each
-   question is still sent to the pipeline independently — the conversation
-   shown in the UI is a frontend-only display concern, never fed back into
-   the prompt.
+   Exposes `POST /api/ingest`, `POST /api/ask`, `POST /api/summary`,
+   `POST /api/remove`, `GET /api/session`, and serves the static frontend
+   from the same origin (no CORS needed). Holds a `Session` per browser (up
+   to 5 documents, each its own `IndexState`, plus the last 10 Q/A turns) in
+   an in-memory dict, keyed by an `httponly` cookie; sessions expire after 2
+   hours of inactivity and at most 50 are kept. Pipeline calls (embedding,
+   LLM) run in a worker thread so one slow request doesn't block others.
+   The last 3 turns are passed to the pipeline so follow-up questions
+   resolve; answers must still come from retrieved passages.
 
 2. **Frontend** (`static/index.html`, `static/style.css`, `static/app.js`)
    A single-page, mobile-first, vanilla HTML/CSS/JS UI: upload, document
