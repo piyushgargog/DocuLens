@@ -24,6 +24,14 @@ those passages) so answers stay traceable back to the source text.
 ## Key features
 
 - Upload any PDF and ask questions about it — no document-specific setup.
+- **Multiple documents**: add up to 5 PDFs and ask across all of them;
+  every source says which document and page it came from.
+- **Follow-up questions**: the last few turns are sent with each question,
+  so "how many moons does it have?" resolves "it" from the previous
+  question. Answers still come only from retrieved passages.
+- **Document summary**: one click per document for a short, page-cited
+  summary.
+- A page reload keeps your documents and conversation.
 - A minimal, mobile-responsive chat interface — no frontend framework, no
   build step, just static HTML/CSS/JS served by the backend.
 - Page-aware text extraction, so every retrieved passage keeps its
@@ -181,16 +189,17 @@ resembling production use.
    limit.
 2. Wait for indexing to finish — the document bar then shows the
    filename, page count, and chunk count.
-3. Ask a question in the chat box and press Enter (Shift+Enter for a
+3. Optionally click **+ Add PDF** to add more documents (up to 5).
+   Questions then search all of them.
+4. Ask a question in the chat box and press Enter (Shift+Enter for a
    newline).
-4. Read the answer, then open the **Sources** disclosure under it to see
-   exactly which page(s) and passage(s) it came from, with similarity
-   scores.
-5. Keep asking follow-up questions — the conversation stays visible for
-   the session. Each question is answered independently from the
-   document (previous turns are not fed back into the model).
-6. Use **Remove document** to clear the document and the conversation,
-   then upload a different PDF.
+5. Read the answer, then open the **Sources** disclosure under it to see
+   exactly which document, page(s) and passage(s) it came from, with
+   similarity scores.
+6. Ask follow-up questions — the last 3 turns are sent along, so
+   references like "it" or "that one" resolve.
+7. Click **Summary** next to a document for a short summary of it.
+8. Use **×** to remove one document, or **Clear all** to start over.
 
 If the document contains no extractable text (empty, corrupt,
 password-protected, or image-only without OCR), or the LLM API key is
@@ -355,12 +364,13 @@ without a shared session store.
 
 ## Known limitations
 
-- Single document per session (multi-document support would be a
-  natural extension — see `IMPLEMENTATION_PLAN.md`).
-- The conversation is displayed for the session but is not used as
-  context: each question is answered independently from the document, so
-  follow-ups like "and what about that one?" won't resolve against the
-  previous turn.
+- Up to 5 documents per session; each is searched separately and the
+  results merged, which is fine for a handful of PDFs, not a large corpus.
+- Only the last 3 conversation turns are used for follow-ups, and the
+  follow-up retrieval simply combines the previous and current question
+  (no LLM query rewriting, to avoid an extra API call per question).
+- Summaries are built from 10 evenly spaced excerpts, not the whole
+  document, so details between them can be missed.
 - Session state lives in server process memory, keyed by a cookie: it is
   lost on server restart, isn't shared across multiple instances/replicas
   of the app, and is pruned after 2 hours of inactivity. This is a
@@ -387,13 +397,11 @@ without a shared session store.
 
 ## Possible future improvements
 
-- **Multi-document support** — ingest and query across several
-  documents at once, tagging chunks with a document identifier alongside
-  the page number.
-- **Conversation history** — let follow-up questions build on prior
-  turns instead of being answered independently.
-- **Document summary** — an optional one-shot summary generated on
-  upload, before any question is asked.
+- **Query rewriting** — have the LLM rewrite a follow-up into a
+  standalone question before retrieval, instead of concatenating it with
+  the previous one.
+- **Full-document summary** — map-reduce over every chunk once a
+  provider with a higher rate limit is used.
 - **Smarter chunking** — sentence- or section-boundary-aware chunking
   instead of a fixed character window, to reduce the table-splitting
   failure mode observed in evaluation.

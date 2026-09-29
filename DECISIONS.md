@@ -23,7 +23,11 @@ are dated and note what actually happened.
    chunk → embed → retrieve → generate functions) demonstrates pipeline
    understanding more directly than a framework's chain abstraction, and
    keeps the code small per NFR1. Revisit only if hand-rolling proves
-   genuinely more complex than expected.
+   genuinely more complex than expected. (Outcome: it did not — the whole
+   pipeline is ~60 lines in `pipeline.py` plus one small module per stage,
+   so this decision stood through the final version. Trade-off: no
+   built-in retrievers/rerankers/memory; those would have to be written by
+   hand if the bonus features were added.)
 
 2. **Embedding model: `sentence-transformers/all-MiniLM-L6-v2`.**
    Small, fast on CPU, no GPU dependency, well-known baseline —
@@ -38,8 +42,11 @@ are dated and note what actually happened.
 4. **Chunking strategy: character-based sliding window, per page, with overlap.**
    Simple, predictable, easy to explain — chosen over sentence/semantic
    chunking for implementation simplicity. `chunk_size` and
-   `chunk_overlap` are exposed as UI controls so the two-configuration
-   comparison (PROJECT_SPEC.md FR8) is a live toggle, not a code change.
+   `chunk_overlap` are parameters of `pipeline.ingest()` so the
+   two-configuration comparison (PROJECT_SPEC.md FR8) is a config change,
+   not a code change — run via `evaluate.py`. (Originally these were
+   Streamlit sidebar sliders; the UI controls were removed in the FastAPI
+   migration — see the 2026-09-19 UI migration entry below.)
 
 5. **LLM access: configurable via environment variables, OpenAI-compatible REST call.**
    Satisfies NFR2 (no hardcoded LLM provider). A minimal `requests`-based
@@ -57,6 +64,8 @@ are dated and note what actually happened.
    Keeps the core scope tight; multi-document support (tagging chunks
    with a document name alongside the page number) is a natural
    extension if needed later — see `IMPLEMENTATION_PLAN.md` Phase 10.
+   (Superseded 2026-09-29: multi-document support was added exactly this
+   way — see the development log.)
 
 ## Chunking / Retrieval Configuration Comparison
 
@@ -191,3 +200,18 @@ date, what changed, why, and what (if anything) failed._
   - **Final verified state**: container running with `--restart unless-stopped` (survives reboot), Nginx reverse-proxying port 80 → `127.0.0.1:8000` with `client_max_body_size 25m` (matching the app's own upload cap) and 120s proxy timeouts (for LLM call latency), full E2E flow (upload → grounded answer with citation → sources → follow-up → correct refusal → remove → re-upload) verified via a real headless browser against the live public URL, zero console errors. `.env` transferred via `scp` directly to the instance, never committed, never logged.
   - **One item genuinely left open**: SSH access to the instance stopped working partway through final verification (three consecutive "Connection timed out" — a network-level drop, not an auth failure) immediately after the user edited the instance's security group to add the HTTP rule; the HTTP/public-app access itself was and remains unaffected and fully verified. Live memory-usage confirmation was therefore taken from the identical local test (685MiB/2GiB under the same real-document-plus-LLM-call load) rather than a live SSH-obtained number for this specific instance — reported as such, not conflated with a live reading. Flagged to the user to check whether the security group edit altered the SSH rule; not something this agent can fix without console access.
 - **2026-09-22** — Reviewed and merged 5 routine Dependabot floor bumps (PRs #8-#12): `pytest>=9.1.1` (dev-only), `requests>=2.34.2`, `pymupdf>=1.28.2`, `uvicorn[standard]>=0.53.0`, `faiss-cpu>=1.15.1`. Each PR's CI (`test` job) was confirmed green before approval and merge, consistent with the existing branch protection (1 required review + required `test` check). PR #12 (`faiss-cpu`) developed a merge conflict in `requirements.txt` after the other four landed first (all touched adjacent lines) — Dependabot's own auto-rebase resolved it once notified; re-verified CI passed on the rebased commit before merging. No source code changed, only version floors — no EC2 redeploy performed, since nothing running in production actually changed (the live container was built from `main` before these merges, and `>=` floors don't retroactively change an already-built image). Tagged and released as `v1.1.2`.
+- **2026-09-29** — Documentation consistency pass against the task brief. Fixed stale text only, no code changed: Decision #4 still described chunk-size UI controls that were removed in the FastAPI migration; Decision #1 now records its outcome and trade-off; `AI_USAGE.md` no longer references the deleted Streamlit `app.py`/"Advanced settings" expander as current, and now covers the Dependabot pass and lists what the author must be able to explain. **Still open:** the brief asks for a document provided by the organizers; the evaluation above used a public paper because the provided document was not yet in the repo. When it is available, re-run `python evaluate.py --pdf <provided.pdf> --questions <questions.json>` (5+ questions incl. one unanswerable) and add the results here.
+- **2026-09-29** — Bug-fix pass plus the three bonus features from the task brief (multiple documents, conversation history, document summary). All 29 existing tests passed before this pass started, so every bug below was found by reading the code, not from a failing test.
+  - **Bugs fixed:**
+    1. **One request could stall the whole server.** `pipeline.ingest()` (PyMuPDF + embedding, CPU-bound) and `pipeline.answer()` (a blocking `requests` LLM call with up to 3 retries) ran directly inside `async def` endpoints, i.e. on the event loop — while one user's document was indexing or LLM call was waiting, every other request waited too. Both now run via `run_in_threadpool`.
+    2. **Invalid JSON crashed `/api/ask` with a 500.** `await request.json()` was unguarded, and a non-object body (`[1,2]`) or non-string `question` (`42`) raised `AttributeError`. Now all return `400`.
+    3. **Errors were returned with HTTP 200.** An unextractable PDF and LLM failures returned `200` with an `error` field. Now `422` (unextractable PDF), `503` (LLM misconfigured), `502` (LLM request failed), `500` (unexpected).
+    4. **Unbounded server memory.** Every upload created a new session and the old one stayed in memory until its 2h TTL; there was no cap on session count. Uploads now add to the existing session (max 5 documents), and at most 50 sessions are kept (oldest-idle evicted). Oversized uploads are no longer read in full: at most 25MB+1 bytes are read before rejecting.
+    5. **Frontend stuck on the spinner behind a proxy.** `app.js` called `response.json()` unguarded, so an HTML error page from Nginx (its own 413 or a 502 while the container restarts) threw an exception and left the "Indexing…" view on screen forever. All requests now go through one `api()` helper that turns network errors and non-JSON responses into a readable message. The Remove button's fetch was also unguarded.
+    6. **`[hidden]` specificity bug, generalized.** The earlier fix only covered `#chat-view`; any element whose class sets `display` would ignore `hidden` (the new inline "Indexing…" status hit exactly this). Fixed once, globally, with `[hidden] { display: none !important; }`.
+    7. Smaller: drag-over now shows visual feedback; literal `**bold**` markers from the model are stripped instead of shown as asterisks (text is still inserted with `textContent`, never parsed as markup); uploaded filenames are reduced to their basename.
+  - **Multi-document support.** `pipeline.ingest(..., name=filename)` tags every chunk with `doc`; `pipeline.retrieve()` searches each document's own FAISS index and keeps the overall top-k by score. Considered one merged FAISS index per session instead — rejected because removing a single document would then require re-embedding or index surgery, while per-document indexes make removal a dict delete. Prompt passages are labeled `[file.pdf, Page N]`; a passage without `doc` keeps the old `[Page N]` label.
+  - **Conversation history.** The last 3 Q/A turns are sent as chat messages, and retrieval runs on both the current question and "previous question + current question" (hits merged, best score kept). A system-prompt rule, added *only* when history is present, says earlier turns are for resolving references, not a source of facts. Considered LLM query rewriting (standard in LangChain's history-aware retriever) — rejected for now because it doubles LLM calls per question and Groq's free tier already rate-limited the evaluation (see 2026-09-19). **Observed result:** after "Which planet is famous for its rings?" (answer: Saturn, page 3), "How many moons does it have?" returned "over 140 confirmed moons" citing page 4; the same question with no history was refused ("I could not find the answer…"), which is correct since "it" is unresolvable alone.
+  - **Document summary.** `pipeline.summarize()` sends 10 evenly spaced chunks to a separate summary prompt (same untrusted-content rule). A full map-reduce over every chunk was rejected for the same rate-limit reason (the 15-page paper has 63 chunks → 63+ LLM calls). Trade-off stated in the UI output ("excerpts used") and README.
+  - **Evaluation results still valid.** With one document and no history, `retrieve()` returns exactly what `store.search()` did (enforced by `test_single_document_retrieval_matches_the_plain_vector_search`) and the prompt is byte-identical (`test_single_turn_prompt_is_unchanged_without_history`) — `evaluate.py` uses that path, so the Config A/B findings above were not re-run.
+  - **Testing performed:** 15 new tests (44 total, all passing), including the fixed bugs (invalid JSON, 422/502 status codes, exception text never echoed) and the new features using a fake LLM so they run without an API key in CI. Full UI flow driven in a headless browser against a real server with the real LLM: upload → grounded answer citing `sample.pdf, Page 3` → unanswerable question refused → add the 15-page paper → cross-document question answered from the paper ("6 identical layers", `dev_real_world_document.pdf · Page 3`) → summary → page reload restored 2 documents and 8 messages → remove one document → 375px mobile width with no horizontal overflow → Clear all back to upload. 0 console errors, 0 failed requests.
