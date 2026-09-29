@@ -178,3 +178,10 @@ def test_summary_of_a_loaded_document(client, sample_pdf_bytes, fake_llm):
 
 def test_session_endpoint_without_a_session(client):
     assert client.get("/api/session").json() == {"documents": [], "history": []}
+
+
+def test_frontend_files_are_revalidated_but_api_is_untouched(client):
+    # Heuristic browser caching once served a stale app.js with a new index.html.
+    for path in ("/", "/static/app.js", "/static/style.css"):
+        assert client.get(path).headers["cache-control"] == "no-cache"
+    assert "cache-control" not in client.get("/api/session").headers
