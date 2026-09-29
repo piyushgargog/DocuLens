@@ -4,8 +4,8 @@
  * Talks to the FastAPI backend (main.py) at /api/ingest, /api/ask,
  * /api/summary, /api/remove and /api/session. All dynamic content
  * (questions, answers, document text, filenames) is inserted with
- * textContent, never innerHTML, so nothing from a document or the model can
- * inject markup into the page.
+ * textContent / text nodes, never innerHTML, so nothing from a document or
+ * the model can inject markup into the page.
  */
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -33,6 +33,7 @@ const docItemTemplate = document.getElementById("doc-item-template");
 const sourceItemTemplate = document.getElementById("source-item-template");
 
 function showView(view) {
+  document.body.dataset.view = view;
   uploadView.hidden = view !== "upload";
   indexingView.hidden = view !== "indexing";
   chatView.hidden = view !== "chat";
@@ -56,68 +57,203 @@ async function api(url, body) {
   try {
     response = await fetch(url, options);
   } catch (err) {
-    return { error: "Network error. Please check your connection and try again." };
+    return { error: "Couldn't reach the server. Check your connection and try again." };
   }
 
   let data;
   try {
     data = await response.json();
   } catch (err) {
-    if (response.status === 413) return { error: "File is too large. The limit is 25MB." };
-    return { error: `The server returned an unexpected response (HTTP ${response.status}). Please try again.` };
+    if (response.status === 413) return { error: "That file is over the 25MB limit." };
+    return { error: `The server sent an unexpected response (HTTP ${response.status}). Try again in a moment.` };
   }
   if (!response.ok && !data.error) {
-    data.error = `Request failed (HTTP ${response.status}). Please try again.`;
+    data.error = `The request failed (HTTP ${response.status}). Try again in a moment.`;
   }
   return data;
 }
+
+// ---------- Messages ----------
 
 function scrollToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-// Models often wrap key phrases in **bold**. Text is shown with textContent
-// (no markdown rendering, by design), so drop the markers instead of showing
-// literal asterisks.
-function plain(text) {
-  return text.replace(/\*\*(.+?)\*\*/g, "$1");
-}
-
-function addMessage(role, text) {
-  const el = document.createElement("div");
-  el.className = `message ${role}`;
-  el.textContent = plain(text);
+function append(el) {
   messagesEl.appendChild(el);
   scrollToBottom();
   return el;
 }
 
-function addSources(sources, label = "Sources") {
-  if (!sources || sources.length === 0) return;
+function addUser(text) {
+  const el = document.createElement("p");
+  el.className = "msg msg-user";
+  el.textContent = text;
+  return append(el);
+}
+
+function addNote(text) {
+  const el = document.createElement("div");
+  el.className = "msg msg-assistant msg-note";
+  const p = document.createElement("p");
+  p.className = "msg-text";
+  p.textContent = text;
+  el.appendChild(p);
+  return append(el);
+}
+
+function addPending(text) {
+  const el = addNote(text);
+  el.classList.add("msg-pending");
+  return el;
+}
+
+function addError(text) {
+  const el = document.createElement("p");
+  el.className = "msg msg-error";
+  el.setAttribute("role", "alert");
+  el.textContent = text;
+  return append(el);
+}
+
+// Models often wrap key phrases in **bold**. Text is shown as plain text (no
+// markdown rendering, by design), so drop the markers instead of showing
+// literal asterisks.
+function plain(text) {
+  return text.replace(/\*\*(.+?)\*\*/g, "$1");
+}
+
+// Citations the model writes, e.g. 【report.pdf, Page 3】, [Page 3],
+// (Page 3), (see Pages 3 and 4) or (report.pdf, Page 3). The model isn't
+// consistent about which form it uses, so all are turned into page tabs.
+const PAGE_REF = String.raw`(?:[^()\[\]\n]*?,\s*)?Pages?\s*(?:[\d\s,–-]|and|&)+`;
+const CITATION = new RegExp(
+  String.raw`【([^】]*)】|\[(${PAGE_REF})\]|\((?:see\s+)?(${PAGE_REF})\)`,
+  "gi",
+);
+
+function citedPages(inner) {
+  const at = inner.search(/Pages?\s*\d/i);
+  if (at < 0) return { doc: "", pages: [] };
+  // Everything before the comma preceding "Page" is the document name; only
+  // numbers after "Page" are pages (so "report2024.pdf" isn't page 2024).
+  const comma = inner.lastIndexOf(",", at);
+  const doc = comma > 0 ? inner.slice(0, comma).trim() : "";
+  const pages = [...inner.slice(at).matchAll(/\d+/g)].map((m) => Number(m[0]));
+  return { doc: /page/i.test(doc) ? "" : doc, pages: [...new Set(pages)] };
+}
+
+/**
+ * Fill `container` with the answer text, replacing citations with page tabs.
+ * A tab whose page is among this answer's sources becomes a button that
+ * opens the sources and highlights that passage.
+ */
+function renderAnswerText(container, text, sources, details) {
+  text = plain(text);
+  let last = 0;
+  for (const match of text.matchAll(CITATION)) {
+    const inner = match[1] ?? match[2] ?? match[3];
+    const { doc, pages } = citedPages(inner);
+    if (pages.length === 0) continue;
+
+    container.append(text.slice(last, match.index).replace(/\s+$/, ""));
+    for (const page of pages) {
+      const slip = findSlip(details, page, doc);
+      const tab = document.createElement(slip ? "button" : "span");
+      tab.className = "cite";
+      tab.textContent = `p. ${page}`;
+      tab.title = doc ? `${doc}, page ${page}` : `Page ${page}`;
+      if (slip) {
+        tab.type = "button";
+        tab.setAttribute("aria-label", `Show the passage from ${tab.title}`);
+        tab.addEventListener("click", () => markSlip(details, slip));
+      }
+      container.append(tab);
+    }
+    last = match.index + match[0].length;
+  }
+  container.append(text.slice(last));
+}
+
+function findSlip(details, page, doc) {
+  if (!details) return null;
+  const slips = [...details.querySelectorAll(".slip")];
+  return (
+    slips.find((s) => Number(s.dataset.page) === page && (!doc || s.dataset.doc === doc)) ||
+    slips.find((s) => Number(s.dataset.page) === page) ||
+    null
+  );
+}
+
+function markSlip(details, slip) {
+  details.open = true;
+  for (const s of details.querySelectorAll(".slip.marked")) s.classList.remove("marked");
+  // Restart the highlighter animation even when the same tab is clicked twice.
+  void slip.offsetWidth;
+  slip.classList.add("marked");
+  slip.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+
+function buildSources(sources, label) {
+  if (!sources || sources.length === 0) return null;
 
   // Only name the document when more than one is loaded -- otherwise it's noise.
   const multiDoc = new Set(sources.map((s) => s.doc)).size > 1 || docList.children.length > 1;
 
   const details = document.createElement("details");
-  details.className = "message-sources";
-
+  details.className = "sources";
   const summary = document.createElement("summary");
   summary.textContent = `${label} (${sources.length})`;
   details.appendChild(summary);
 
+  const list = document.createElement("ol");
+  list.className = "slips";
   for (const src of sources) {
     const node = sourceItemTemplate.content.cloneNode(true);
-    node.querySelector(".source-page").textContent =
-      multiDoc && src.doc ? `${src.doc} · Page ${src.page}` : `Page ${src.page}`;
-    node.querySelector(".source-score").textContent =
-      typeof src.score === "number" ? `similarity: ${src.score.toFixed(3)}` : "";
-    node.querySelector(".source-text").textContent = src.text;
-    details.appendChild(node);
+    const slip = node.querySelector(".slip");
+    slip.dataset.page = src.page;
+    slip.dataset.doc = src.doc || "";
+    node.querySelector(".slip-page").textContent =
+      multiDoc && src.doc ? `${src.doc}, page ${src.page}` : `Page ${src.page}`;
+    node.querySelector(".slip-score").textContent =
+      typeof src.score === "number" ? `similarity ${src.score.toFixed(2)}` : "";
+    // PDF extraction keeps the page's hard line breaks; rejoin them so the
+    // passage reads as prose (blank lines between paragraphs are kept).
+    node.querySelector(".slip-text").textContent = src.text.replace(/(?<!\n)\n(?!\n)/g, " ");
+    list.appendChild(node);
+  }
+  details.appendChild(list);
+  return details;
+}
+
+/** Turn a pending message into a finished answer (or add a new one). */
+function showAnswer(el, text, sources, { heading, sourcesLabel = "Sources" } = {}) {
+  el.className = "msg msg-assistant";
+  el.replaceChildren();
+
+  if (heading) {
+    const h = document.createElement("p");
+    h.className = "msg-heading";
+    h.textContent = heading;
+    el.appendChild(h);
   }
 
-  messagesEl.appendChild(details);
+  const details = buildSources(sources, sourcesLabel);
+  const body = document.createElement("p");
+  body.className = "msg-text";
+  renderAnswerText(body, text, sources, details);
+  el.appendChild(body);
+  if (details) el.appendChild(details);
   scrollToBottom();
 }
+
+function showFailure(el, text) {
+  el.className = "msg msg-error";
+  el.setAttribute("role", "alert");
+  el.textContent = text;
+}
+
+// ---------- Documents ----------
 
 function renderDocuments(documents) {
   docList.replaceChildren();
@@ -125,9 +261,13 @@ function renderDocuments(documents) {
     const node = docItemTemplate.content.cloneNode(true);
     node.querySelector(".doc-name").textContent = doc.filename;
     node.querySelector(".doc-name").title = doc.filename;
-    node.querySelector(".doc-meta").textContent = `${doc.num_pages} pages · ${doc.num_chunks} chunks`;
+    node.querySelector(".doc-meta").textContent =
+      `${doc.num_pages} ${doc.num_pages === 1 ? "page" : "pages"}`;
     node.querySelector(".doc-summary").addEventListener("click", (e) => summarizeDoc(doc, e.currentTarget));
-    node.querySelector(".doc-remove").addEventListener("click", () => removeDoc(doc.id));
+    const remove = node.querySelector(".doc-remove");
+    remove.setAttribute("aria-label", `Remove ${doc.filename}`);
+    remove.title = "Remove";
+    remove.addEventListener("click", () => removeDoc(doc.id));
     docList.appendChild(node);
   }
   if (documents.length === 0) {
@@ -138,8 +278,8 @@ function renderDocuments(documents) {
 }
 
 function validateFile(file) {
-  if (!file.name.toLowerCase().endsWith(".pdf")) return "Please upload a PDF file.";
-  if (file.size > MAX_UPLOAD_BYTES) return "File is too large. The limit is 25MB.";
+  if (!file.name.toLowerCase().endsWith(".pdf")) return "That isn't a PDF. Choose a file ending in .pdf.";
+  if (file.size > MAX_UPLOAD_BYTES) return "That file is over the 25MB limit.";
   return null;
 }
 
@@ -171,18 +311,18 @@ async function uploadFirst(file) {
   }
 
   messagesEl.replaceChildren();
-  renderDocuments(data.documents);
-  addMessage("assistant", `"${data.filename}" is ready — ask me anything about it, or add more PDFs to search across them.`);
-  questionInput.value = "";
   showView("chat");
+  renderDocuments(data.documents);
+  addNote(`${data.filename} is ready. Ask anything about it.`);
+  questionInput.value = "";
   questionInput.focus();
 }
 
-// Further documents: indexed inline, conversation stays.
+// Further documents: read inline, conversation stays.
 async function uploadAdditional(file) {
   const problem = validateFile(file);
   if (problem) {
-    addMessage("error", problem);
+    addError(problem);
     return;
   }
 
@@ -194,36 +334,41 @@ async function uploadAdditional(file) {
   addFileInput.value = "";
 
   if (data.error) {
-    addMessage("error", `Couldn't add "${file.name}": ${data.error}`);
+    addError(`Couldn't add ${file.name}: ${data.error}`);
     return;
   }
   renderDocuments(data.documents);
-  addMessage("assistant", `Added "${data.filename}". Questions now search all ${data.documents.length} documents.`);
+  addNote(`Added ${data.filename}. Questions now search all ${data.documents.length} documents.`);
 }
 
 async function summarizeDoc(doc, button) {
   button.disabled = true;
-  const pending = addMessage("assistant", `Summarizing "${doc.filename}"…`);
+  const pending = addPending(`Summarizing ${doc.filename}…`);
   const data = await api("/api/summary", { id: doc.id });
   button.disabled = false;
 
   if (data.error) {
-    pending.textContent = data.error;
-    pending.className = "message error";
+    showFailure(pending, data.error);
     return;
   }
-  pending.textContent = plain(`Summary of "${data.filename}":\n\n${data.summary}`);
-  addSources(data.sources, "Excerpts used");
+  // The heading already says "Summary of …"; drop the model's own "Summary:" lead-in.
+  const summary = data.summary.replace(/^\s*\**summary\**:?\**\s*/i, "");
+  showAnswer(pending, summary, data.sources, {
+    heading: `Summary of ${data.filename}`,
+    sourcesLabel: "Passages used",
+  });
 }
 
 async function removeDoc(id) {
   const data = await api("/api/remove", { id });
   if (data.error) {
-    addMessage("error", data.error);
+    addError(data.error);
     return;
   }
   renderDocuments(data.documents);
 }
+
+// ---------- Events ----------
 
 fileInput.addEventListener("change", () => {
   if (fileInput.files.length > 0) uploadFirst(fileInput.files[0]);
@@ -233,7 +378,7 @@ addFileInput.addEventListener("change", () => {
   if (addFileInput.files.length > 0) uploadAdditional(addFileInput.files[0]);
 });
 
-// The "+ Add PDF" label is focusable; let Enter/Space open the picker like a button.
+// The "Add another PDF" label is focusable; let Enter/Space open the picker like a button.
 addBtn.addEventListener("keydown", (e) => {
   if (e.key === "Enter" || e.key === " ") {
     e.preventDefault();
@@ -241,7 +386,7 @@ addBtn.addEventListener("keydown", (e) => {
   }
 });
 
-// Drag-and-drop support on the dropzone label, with a visual hover state.
+// Drag-and-drop on the dropzone, with a visual hover state.
 dropzone.addEventListener("dragover", (e) => {
   e.preventDefault();
   dropzone.classList.add("dragging");
@@ -267,21 +412,19 @@ askForm.addEventListener("submit", async (e) => {
   const question = questionInput.value.trim();
   if (!question) return;
 
-  addMessage("user", question);
+  addUser(question);
   questionInput.value = "";
   autoGrow();
   askBtn.disabled = true;
   questionInput.disabled = true;
 
-  const thinking = addMessage("assistant", "Thinking…");
+  const pending = addPending("Searching your documents…");
   const data = await api("/api/ask", { question });
 
   if (data.error) {
-    thinking.textContent = data.error;
-    thinking.className = "message error";
+    showFailure(pending, data.error);
   } else {
-    thinking.textContent = plain(data.answer);
-    addSources(data.sources);
+    showAnswer(pending, data.answer, data.sources);
   }
 
   askBtn.disabled = false;
@@ -305,15 +448,16 @@ function autoGrow() {
 questionInput.addEventListener("input", autoGrow);
 
 // Restore documents and conversation after a page reload (the session
-// cookie outlives the page).
+// cookie outlives the page). Sources aren't kept server-side, so restored
+// answers show their citations without the passage list.
 (async function restoreSession() {
   const data = await api("/api/session");
   if (data.error || !data.documents || data.documents.length === 0) return;
+  showView("chat");
   renderDocuments(data.documents);
   for (const turn of data.history) {
-    addMessage("user", turn.question);
-    addMessage("assistant", turn.answer);
+    addUser(turn.question);
+    showAnswer(addNote(""), turn.answer, []);
   }
-  if (data.history.length === 0) addMessage("assistant", "Documents restored — ask me anything about them.");
-  showView("chat");
+  if (data.history.length === 0) addNote("Your documents are still loaded. Ask anything about them.");
 })();

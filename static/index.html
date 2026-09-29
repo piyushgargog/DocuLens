@@ -4,85 +4,105 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Document Assistant</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📄</text></svg>" />
+  <meta name="description" content="Ask questions about your PDFs and see the page every answer came from." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><rect x=%226%22 y=%223%22 width=%2220%22 height=%2226%22 rx=%222%22 fill=%22%231B2A41%22/><rect x=%2210%22 y=%2213%22 width=%2212%22 height=%224%22 fill=%22%23FFE45C%22/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" />
   <!-- ?v= changes with each release so browsers holding an older cached copy fetch the new file. -->
-  <link rel="stylesheet" href="/static/style.css?v=1.2.1" />
+  <link rel="stylesheet" href="/static/style.css?v=1.3.0" />
 </head>
-<body>
-  <header class="app-header">
-    <h1>AI Document Assistant</h1>
-    <p class="tagline">
-      Upload one or more PDFs and ask questions about them in plain language.
-      Answers are grounded strictly in the documents' content, with the source
-      page shown for every answer.
-    </p>
+<body data-view="upload">
+  <header class="topbar">
+    <span class="wordmark">
+      <svg class="wordmark-icon" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="6" y="3" width="20" height="26" rx="2" />
+        <rect class="mark" x="10" y="13" width="12" height="4" />
+      </svg>
+      AI Document Assistant
+    </span>
   </header>
 
-  <main>
-    <!-- Empty / upload state -->
-    <section id="upload-view" class="panel">
-      <label for="file-input" class="dropzone" id="dropzone">
-        <span class="dropzone-title">Upload a PDF</span>
-        <span class="dropzone-hint">Click to choose a file, or drag one here (25MB limit)</span>
-      </label>
-      <input id="file-input" type="file" accept="application/pdf" hidden />
-      <p id="upload-error" class="error-text" hidden></p>
-    </section>
-
-    <!-- Indexing state -->
-    <section id="indexing-view" class="panel" hidden>
-      <p class="status-line"><span class="spinner" aria-hidden="true"></span> Reading and indexing document&hellip;</p>
-    </section>
-
-    <!-- Document ready + chat -->
-    <section id="chat-view" hidden>
-      <div class="doc-bar">
-        <ul id="doc-list" class="doc-list"></ul>
-        <div class="doc-actions">
-          <span id="add-status" class="status-line small" hidden><span class="spinner" aria-hidden="true"></span> Indexing&hellip;</span>
-          <label for="add-file-input" class="btn-secondary" id="add-btn" tabindex="0">+ Add PDF</label>
-          <input id="add-file-input" type="file" accept="application/pdf" hidden />
-          <button id="remove-btn" class="btn-secondary" type="button">Clear all</button>
-        </div>
+  <div class="layout">
+    <!-- Documents in this session (shown once at least one is loaded) -->
+    <aside class="shelf" aria-label="Your documents">
+      <h2 class="shelf-title">Your documents</h2>
+      <ul id="doc-list" class="doc-list"></ul>
+      <div class="shelf-actions">
+        <span id="add-status" class="add-status" hidden><span class="spinner" aria-hidden="true"></span> Reading PDF&hellip;</span>
+        <label for="add-file-input" class="btn btn-quiet" id="add-btn" tabindex="0">Add another PDF</label>
+        <input id="add-file-input" type="file" accept="application/pdf" hidden />
+        <button id="remove-btn" class="btn btn-text" type="button">Remove all</button>
       </div>
+    </aside>
 
-      <div id="messages" class="messages" aria-live="polite"></div>
+    <main class="desk">
+      <!-- Empty / upload state -->
+      <section id="upload-view" class="sheet sheet-intro">
+        <h1 class="intro-title">Ask your PDF a question. Get the answer and the page it came from.</h1>
+        <p class="intro-body">
+          Answers use only the text in your document. If the document doesn't
+          say, the assistant tells you so instead of guessing.
+        </p>
+        <label for="file-input" class="dropzone" id="dropzone">
+          <span class="dropzone-title">Choose a PDF or drop it here</span>
+          <span class="dropzone-hint">Up to 25MB. PDFs with selectable text work best; scanned images can't be read.</span>
+        </label>
+        <input id="file-input" type="file" accept="application/pdf" hidden />
+        <p id="upload-error" class="error-text" role="alert" hidden></p>
+      </section>
 
-      <form id="ask-form" class="ask-form">
-        <textarea
-          id="question-input"
-          class="question-input"
-          placeholder="Ask a question about the document&hellip;"
-          maxlength="1000"
-          rows="1"
-          required
-        ></textarea>
-        <button type="submit" class="btn-primary" id="ask-btn">Ask</button>
-      </form>
-    </section>
-  </main>
+      <!-- Indexing state -->
+      <section id="indexing-view" class="sheet sheet-intro" hidden>
+        <p class="status-line"><span class="spinner" aria-hidden="true"></span> Reading your PDF and preparing it for questions&hellip;</p>
+      </section>
+
+      <!-- Chat -->
+      <section id="chat-view" class="sheet sheet-chat" hidden>
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <form id="ask-form" class="ask-form">
+          <label for="question-input" class="visually-hidden">Your question</label>
+          <textarea
+            id="question-input"
+            class="question-input"
+            placeholder="Ask about your documents"
+            maxlength="1000"
+            rows="1"
+            required
+          ></textarea>
+          <button type="submit" class="btn btn-primary" id="ask-btn">Ask</button>
+        </form>
+      </section>
+    </main>
+  </div>
 
   <template id="doc-item-template">
     <li class="doc-item">
+      <svg class="doc-icon" viewBox="0 0 16 20" aria-hidden="true"><path d="M1 1h9l5 5v13H1z" /></svg>
       <div class="doc-info">
         <span class="doc-name"></span>
         <span class="doc-meta"></span>
       </div>
-      <button class="btn-link doc-summary" type="button">Summary</button>
-      <button class="btn-icon doc-remove" type="button" aria-label="Remove document">&times;</button>
+      <div class="doc-buttons">
+        <button class="btn btn-text doc-summary" type="button">Summarize</button>
+        <button class="btn-icon doc-remove" type="button">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </div>
     </li>
   </template>
 
   <template id="source-item-template">
-    <div class="source-item">
-      <div class="source-head">
-        <span class="source-page"></span>
-        <span class="source-score"></span>
+    <li class="slip">
+      <div class="slip-head">
+        <span class="slip-page"></span>
+        <span class="slip-score"></span>
       </div>
-      <p class="source-text"></p>
-    </div>
+      <p class="slip-text"></p>
+    </li>
   </template>
 
-  <script src="/static/app.js?v=1.2.1"></script>
+  <script src="/static/app.js?v=1.3.0"></script>
 </body>
 </html>

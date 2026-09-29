@@ -32,8 +32,12 @@ those passages) so answers stay traceable back to the source text.
 - **Document summary**: one click per document for a short, page-cited
   summary.
 - A page reload keeps your documents and conversation.
-- A minimal, mobile-responsive chat interface — no frontend framework, no
-  build step, just static HTML/CSS/JS served by the backend.
+- **Clickable page citations**: page references in an answer become
+  highlighter-yellow tabs; clicking one opens the sources and marks the
+  exact passage it points to.
+- A mobile-responsive reading interface with light and dark themes — no
+  frontend framework, no build step, just static HTML/CSS/JS served by
+  the backend.
 - Page-aware text extraction, so every retrieved passage keeps its
   source page number.
 - Answers are grounded: the LLM is instructed to answer only from
@@ -187,19 +191,19 @@ resembling production use.
 
 1. Upload a PDF (click the upload area, or drag a file onto it). 25MB
    limit.
-2. Wait for indexing to finish — the document bar then shows the
-   filename, page count, and chunk count.
-3. Optionally click **+ Add PDF** to add more documents (up to 5).
+2. Wait for the PDF to be read — it then appears under **Your documents**
+   with its page count.
+3. Optionally click **Add another PDF** to add more documents (up to 5).
    Questions then search all of them.
-4. Ask a question in the chat box and press Enter (Shift+Enter for a
-   newline).
-5. Read the answer, then open the **Sources** disclosure under it to see
-   exactly which document, page(s) and passage(s) it came from, with
-   similarity scores.
+4. Ask a question in the box at the bottom and press Enter (Shift+Enter
+   for a newline).
+5. Read the answer. Click a yellow page tab (e.g. **p. 3**) to jump to
+   the passage it came from, or open **Sources** to see every retrieved
+   passage with its document, page and similarity score.
 6. Ask follow-up questions — the last 3 turns are sent along, so
    references like "it" or "that one" resolve.
-7. Click **Summary** next to a document for a short summary of it.
-8. Use **×** to remove one document, or **Clear all** to start over.
+7. Click **Summarize** under a document for a short summary of it.
+8. Use **×** to remove one document, or **Remove all** to start over.
 
 If the document contains no extractable text (empty, corrupt,
 password-protected, or image-only without OCR), or the LLM API key is
