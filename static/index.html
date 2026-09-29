@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Document Assistant</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📄</text></svg>" />
-  <link rel="stylesheet" href="/static/style.css" />
+  <!-- ?v= changes with each release so browsers holding an older cached copy fetch the new file. -->
+  <link rel="stylesheet" href="/static/style.css?v=1.2.1" />
 </head>
 <body>
   <header class="app-header">
@@ -82,6 +83,6 @@
     </div>
   </template>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=1.2.1"></script>
 </body>
 </html>

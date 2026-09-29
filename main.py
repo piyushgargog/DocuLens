@@ -35,6 +35,22 @@ SESSION_TTL_SECONDS = 2 * 60 * 60  # 2 hours of inactivity
 app = FastAPI(title="AI Document Assistant")
 
 
+@app.middleware("http")
+async def revalidate_frontend(request: Request, call_next):
+    """Make browsers revalidate the page and its JS/CSS on every load.
+
+    Without a Cache-Control header, browsers cache static files heuristically
+    and may skip asking the server at all -- after the v1.2.0 deploy a browser
+    kept running the old app.js against the new index.html and hung on
+    "Reading and indexing document". With no-cache, an unchanged file still
+    costs only a 304.
+    """
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @dataclass
 class Session:
     docs: dict[str, pipeline.IndexState] = field(default_factory=dict)  # doc_id -> index
