@@ -16,7 +16,10 @@ class VectorStore:
         self.index.add(embeddings)
 
     def search(self, query_embedding: np.ndarray, top_k: int) -> list[dict]:
-        """Return the top_k most similar chunks as {text, page, score}, best first."""
+        """Return the top_k most similar chunks as {text, page, score}, best first.
+
+        Any extra keys on a chunk (e.g. "doc" for multi-document sessions) are
+        carried through to the result."""
         top_k = min(top_k, len(self.chunks))
         if top_k == 0:
             return []
@@ -27,5 +30,5 @@ class VectorStore:
             if idx == -1:
                 continue
             chunk = self.chunks[idx]
-            results.append({"text": chunk["text"], "page": chunk["page"], "score": float(score)})
+            results.append({**chunk, "score": float(score)})
         return results

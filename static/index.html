@@ -11,9 +11,9 @@
   <header class="app-header">
     <h1>AI Document Assistant</h1>
     <p class="tagline">
-      Upload a PDF and ask questions about it in plain language. Answers are
-      grounded strictly in the document's content, with the source page shown
-      for every answer.
+      Upload one or more PDFs and ask questions about them in plain language.
+      Answers are grounded strictly in the documents' content, with the source
+      page shown for every answer.
     </p>
   </header>
 
@@ -36,11 +36,13 @@
     <!-- Document ready + chat -->
     <section id="chat-view" hidden>
       <div class="doc-bar">
-        <div class="doc-info">
-          <span class="doc-name" id="doc-name"></span>
-          <span class="doc-meta" id="doc-meta"></span>
+        <ul id="doc-list" class="doc-list"></ul>
+        <div class="doc-actions">
+          <span id="add-status" class="status-line small" hidden><span class="spinner" aria-hidden="true"></span> Indexing&hellip;</span>
+          <label for="add-file-input" class="btn-secondary" id="add-btn" tabindex="0">+ Add PDF</label>
+          <input id="add-file-input" type="file" accept="application/pdf" hidden />
+          <button id="remove-btn" class="btn-secondary" type="button">Clear all</button>
         </div>
-        <button id="remove-btn" class="btn-secondary" type="button">Remove document</button>
       </div>
 
       <div id="messages" class="messages" aria-live="polite"></div>
@@ -58,6 +60,17 @@
       </form>
     </section>
   </main>
+
+  <template id="doc-item-template">
+    <li class="doc-item">
+      <div class="doc-info">
+        <span class="doc-name"></span>
+        <span class="doc-meta"></span>
+      </div>
+      <button class="btn-link doc-summary" type="button">Summary</button>
+      <button class="btn-icon doc-remove" type="button" aria-label="Remove document">&times;</button>
+    </li>
+  </template>
 
   <template id="source-item-template">
     <div class="source-item">
