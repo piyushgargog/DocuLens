@@ -4,7 +4,7 @@ A Retrieval-Augmented Generation (RAG) tool that answers questions about
 the documents you upload — grounded strictly in their content, with the exact
 source page and passage shown beside every answer.
 
-**Live:** https://doculens.duckdns.org — **Latest release:** v3.6.1
+**Live:** https://doculens.duckdns.org — **Latest release:** v3.6.2
 
 ## What it does
 
@@ -23,6 +23,13 @@ that isn't actually in the source (hallucination). This project combines
 retrieval (find the relevant passages) with generation (answer from only
 those passages) so answers stay traceable back to the source text.
 
+## What's new in v3.6.2
+
+- **Motion under "reduce motion" restored to the original quick timing.** v3.6.1
+  gave reduced-motion users slow opacity fades and a fading (not beating) heart,
+  which felt sluggish. The landing page's settle-in (0.55 s, 40-420 ms stagger) and
+  the footer heartbeat now behave exactly as for everyone else.
+
 ## What's new in v3.6.1
 
 - **Starter questions appear once.** "Try asking" used to show three generic
@@ -33,9 +40,10 @@ those passages) so answers stay traceable back to the source text.
 - **The page arrives gently and the footer heart beats again, also with
   "reduce motion" on.** Windows' *Show animations: off* turns on the browser's
   reduced-motion setting, which flattened every entrance to an instant pop and
-  stopped the heart. Reduced motion now means no movement but still a soft
-  opacity fade in reading order, and a slow opacity pulse on the heart. The
-  normal heartbeat (removed in v3.3.0) is back for everyone else.
+  stopped the heart. The opening page's quick settle-in and the footer heartbeat
+  now keep running under that setting too (v3.6.2 restored the original fast
+  timing after a first attempt with slower fades felt wrong); all other motion
+  stays reduced. The normal heartbeat (removed in v3.3.0) is back for everyone.
 - **Fix: the suggested "main focus" question was refused.** A question the app
   itself suggested ("What is the main focus of the resume?") answered "not in the
   document". The v3.6.0 abstention floor was refusing it (its similarity score,
@@ -113,8 +121,8 @@ those passages) so answers stay traceable back to the source text.
 - A clean, modern interface (v2.1.0): documents sidebar card, chat-style
   conversation with a floating composer, light and dark themes, a
   keyboard-accessible, mobile-responsive layout, restrained motion that
-  responds to what you do (reduced to soft fades under reduced-motion
-  settings), and a full footer with the author credit, repository and
+  responds to what you do (mostly switched off under reduced-motion
+  settings, except the quick page settle-in and the footer heartbeat), and a full footer with the author credit, repository and
   release links, a privacy dialog and the running version — no frontend framework, no
   build step, just static HTML/CSS/JS served by the backend. The design
   rationale is in [`DESIGN.md`](DESIGN.md).

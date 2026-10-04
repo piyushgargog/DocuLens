@@ -2189,11 +2189,6 @@ body[data-view="chat"] .site-footer {
   animation: beat 2.4s ease-in-out infinite;
 }
 
-@keyframes heart-glow {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
-}
-
 @keyframes beat {
   0%, 60%, 100% { transform: scale(1); }
   10% { transform: scale(1.22); }
@@ -2515,23 +2510,24 @@ body[data-view="chat"] .site-footer {
     transition: none !important;
   }
 
-  /* "Reduce" is not "remove": large movement is gone, but the page still
-     arrives as a gentle opacity fade in reading order, and the footer heart
-     still gives a slow, soft pulse (opacity only, no scaling). Without this
-     a machine with Windows animations switched off sees everything pop in
-     at once and a dead heart. */
+  /* The opening page and the footer heart keep their normal, quick motion
+     even under "reduce motion". On Windows with "Show animations" off the
+     browser reports reduced motion for everyone, and the blanket rule above
+     made the page pop in all at once with a dead heart; a short settle-in and
+     a small heartbeat are the product's character, not a vestibular trigger.
+     Everything else stays reduced. */
   #upload-view > * {
-    animation: fade 0.7s ease-out both !important;
+    animation: settle 0.55s var(--spring) both !important;
   }
-  #upload-view > .eyebrow-badge { animation-delay: 60ms !important; }
-  #upload-view > .intro-title { animation-delay: 180ms !important; }
-  #upload-view > .intro-body { animation-delay: 300ms !important; }
-  #upload-view > .dropzone { animation-delay: 420ms !important; }
-  #upload-view > .features { animation-delay: 540ms !important; }
-  #upload-view > .privacy-note { animation-delay: 640ms !important; }
+  #upload-view > .eyebrow-badge { animation-delay: 40ms !important; }
+  #upload-view > .intro-title { animation-delay: 110ms !important; }
+  #upload-view > .intro-body { animation-delay: 190ms !important; }
+  #upload-view > .dropzone { animation-delay: 270ms !important; }
+  #upload-view > .features { animation-delay: 350ms !important; }
+  #upload-view > .privacy-note { animation-delay: 420ms !important; }
 
   .heart {
-    animation: heart-glow 2.8s ease-in-out infinite !important;
+    animation: beat 2.4s ease-in-out infinite !important;
   }
   .suggestion-skeleton {
     animation: shimmer-pill 1.8s linear infinite !important;
