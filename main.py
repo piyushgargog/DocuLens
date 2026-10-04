@@ -8,10 +8,12 @@ pipeline.ingest()/answer()/summarize() to HTTP and holds per-session state.
 """
 
 import asyncio
+import ipaddress
 import json
 import os
 import re
 import secrets
+import threading
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -26,6 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import document_loader
+import embedder
 import observability
 import pipeline
 import providers
@@ -40,7 +43,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 # The release version. static/index.html repeats it (asset ?v= query, footer,
 # release link) and tests/test_api.py fails if the two ever disagree.
-APP_VERSION = "3.5.0"
+APP_VERSION = "3.6.0"
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB -- unchanged from the previous UI's limit
 MAX_QUESTION_CHARS = 1000  # unchanged from the previous UI's limit
@@ -55,6 +58,19 @@ CLEANUP_INTERVAL_SECONDS = 5 * 60
 MAX_CHUNKS_PER_DOC = 1500
 MAX_FILENAME_CHARS = 120
 
+# Total in-memory chunk budget across all sessions.  At ~800 chars per chunk
+# plus a 384-dim float32 embedding vector (~1.5 KB each) and BM25 term index,
+# each chunk costs roughly 3 KB.  The default 75 000 chunks ≈ 225 MB of chunk
+# data, leaving headroom on a 2 GB server for the embedding model (~200 MB),
+# the Python runtime, and request buffers.  Adjust via MAX_TOTAL_CHUNKS.
+# This is a best-effort soft limit, not horizontal scalability.
+try:
+    MAX_TOTAL_CHUNKS = max(1, int(os.environ.get("MAX_TOTAL_CHUNKS", "75000")))
+except ValueError:
+    log.warning("Invalid MAX_TOTAL_CHUNKS; using 75000")
+    MAX_TOTAL_CHUNKS = 75000
+
+
 # Per-client request limits: (max requests, window in seconds). Every
 # LLM-backed call spends the shared provider quota (on Groq's free tier, a
 # daily token budget), so one script could otherwise take the assistant down
@@ -63,6 +79,30 @@ RATE_LIMITS = {
     "llm": [(10, 60), (100, 60 * 60)],  # /api/ask, /api/summary, /api/suggestions
     "ingest": [(10, 10 * 60)],  # /api/ingest
 }
+
+# CIDR networks whose X-Real-IP header is trusted for rate limiting.
+# Default: loopback only (safe for Nginx on the same host). Behind a
+# Docker bridge or external reverse proxy, set TRUSTED_PROXIES to a
+# comma-separated list of CIDRs, e.g. "172.17.0.0/16,10.0.0.0/8".
+# Never include 0.0.0.0/0: any client could then spoof their IP.
+_TRUSTED_PROXY_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+
+def _parse_trusted_proxies() -> list:
+    raw = os.environ.get("TRUSTED_PROXIES", "127.0.0.0/8,::1/128").strip()
+    nets = []
+    for position, cidr in enumerate(raw.split(","), start=1):
+        cidr = cidr.strip()
+        if not cidr:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            # Log the position only, never the configured text.
+            log.warning("Ignoring invalid TRUSTED_PROXIES entry #%d", position)
+    return nets
+
+
+_TRUSTED_PROXY_NETS = _parse_trusted_proxies()
 
 # Sent with every response. The page loads nothing from other origins (fonts
 # are self-hosted), so the policy can be 'self' throughout; the favicon is an
@@ -118,6 +158,9 @@ async def lifespan(app: FastAPI):
         # endpoint answers 503 with a clear message. Refusing to start would
         # also break the credential-free test suite and CI.
         log.warning("No LLM provider is configured -- questions, summaries and suggestions will fail.")
+    if embedder.prefetch_enabled():
+        # Moves the ~2s model load from the first upload to startup.
+        await run_in_threadpool(embedder.prefetch)
     sweeper = asyncio.create_task(_sweep_expired_sessions())
     try:
         yield
@@ -156,6 +199,28 @@ async def api_request_guard(request: Request, call_next):
             if length and length.isdigit() and int(length) > MAX_JSON_BYTES:
                 return _error("Request is too large.", 413)
     return await call_next(request)
+
+
+@app.middleware("http")
+async def refresh_session_cookie(request: Request, call_next):
+    """Refresh the session cookie max-age on active cookie-authenticated
+    responses so the browser expiry tracks the server-side TTL.  The
+    session id itself is unchanged -- only the expiry slides forward."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        return response
+    cookie_name = _cookie_name(request)
+    session_id = request.cookies.get(cookie_name, "")
+    if session_id and session_id in _sessions:
+        response.set_cookie(
+            cookie_name,
+            session_id,
+            httponly=True,
+            samesite="lax",
+            secure=_is_https(request),
+            max_age=SESSION_TTL_SECONDS,
+        )
+    return response
 
 
 @app.middleware("http")
@@ -208,6 +273,7 @@ class Session:
     docs: dict[str, pipeline.IndexState] = field(default_factory=dict)  # doc_id -> index
     history: list[dict] = field(default_factory=list)  # [{"question", "answer"}], oldest first
     last_used: float = field(default_factory=time.time)
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
 
 # In-memory sessions keyed by a random cookie value. A single-process
@@ -219,15 +285,32 @@ _sessions: dict[str, Session] = {}
 
 def _prune_sessions() -> None:
     now = time.time()
-    for sid in [sid for sid, s in _sessions.items() if now - s.last_used > SESSION_TTL_SECONDS]:
-        del _sessions[sid]
+    expired = []
+    for sid, session in list(_sessions.items()):
+        with session.lock:
+            if now - session.last_used > SESSION_TTL_SECONDS:
+                expired.append(sid)
+    for sid in expired:
+        _sessions.pop(sid, None)
     while len(_sessions) > MAX_SESSIONS:
-        oldest = min(_sessions, key=lambda sid: _sessions[sid].last_used)
-        del _sessions[oldest]
+        oldest = min(
+            _sessions,
+            key=lambda sid: _sessions[sid].last_used,
+        )
+        _sessions.pop(oldest, None)
     # Rate-limit history older than the longest window is no longer needed.
     longest = max(window for limits in RATE_LIMITS.values() for _, window in limits)
     for key in [k for k, hits in _rate_log.items() if not hits or now - hits[-1] > longest]:
         del _rate_log[key]
+
+
+def _total_chunks() -> int:
+    """Current total chunks across all sessions."""
+    total = 0
+    for session in list(_sessions.values()):
+        with session.lock:
+            total += sum(state.num_chunks for state in session.docs.values())
+    return total
 
 
 # (client, bucket) -> timestamps of recent allowed requests, oldest first.
@@ -235,12 +318,20 @@ _rate_log: dict[tuple[str, str], deque] = {}
 
 
 def _client_ip(request: Request) -> str:
-    """The caller's address. The app only listens on 127.0.0.1 in production,
-    so a loopback peer is Nginx, which overwrites X-Real-IP with the real
-    client address; the header is ignored from anyone else, so it can't be
-    spoofed to dodge the rate limit."""
+    """The caller's address for rate limiting.
+
+    When the peer IP belongs to a configured trusted-proxy network
+    (default: loopback only), we read X-Real-IP as set by the reverse
+    proxy.  The header is ignored from any other peer, so it can't be
+    spoofed to dodge the rate limit.  Set TRUSTED_PROXIES to a
+    comma-separated list of CIDRs for Docker bridge or similar setups.
+    """
     peer = request.client.host if request.client else "unknown"
-    if peer in ("127.0.0.1", "::1"):
+    try:
+        peer_addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer
+    if any(peer_addr in net for net in _TRUSTED_PROXY_NETS):
         return request.headers.get("x-real-ip", peer)
     return peer
 
@@ -279,7 +370,8 @@ def _cookie_name(request: Request) -> str:
 def _get_session(request: Request) -> Session | None:
     session = _sessions.get(request.cookies.get(_cookie_name(request), ""))
     if session is not None:
-        session.last_used = time.time()
+        with session.lock:
+            session.last_used = time.time()
     return session
 
 
@@ -338,7 +430,7 @@ async def _question_request(request: Request) -> tuple[Session, str, list] | JSO
     """Validate an ask request: a session with documents, a question, and an
     optional `doc_ids` list choosing which of the session's documents to search."""
     session = _get_session(request)
-    if session is None or not session.docs:
+    if session is None:
         return _error("No document is loaded. Please upload a PDF first.", 400)
 
     body = await _json_body(request)
@@ -350,15 +442,18 @@ async def _question_request(request: Request) -> tuple[Session, str, list] | JSO
         return _error(f"Question is too long (max {MAX_QUESTION_CHARS} characters).", 400)
 
     doc_ids = body.get("doc_ids")
-    if doc_ids is None:
-        states = list(session.docs.values())
-    else:
-        if not isinstance(doc_ids, list):
-            return _error("doc_ids must be a list.", 400)
-        # Only ids from this session count: another session's ids simply don't match.
-        states = [session.docs[d] for d in doc_ids if isinstance(d, str) and d in session.docs]
-        if not states:
-            return _error("Choose at least one of your documents to search.", 400)
+    with session.lock:
+        if not session.docs:
+            return _error("No document is loaded. Please upload a PDF first.", 400)
+        if doc_ids is None:
+            states = list(session.docs.values())
+        else:
+            if not isinstance(doc_ids, list):
+                return _error("doc_ids must be a list.", 400)
+            # Only ids from this session count: another session's ids simply don't match.
+            states = [session.docs[d] for d in doc_ids if isinstance(d, str) and d in session.docs]
+            if not states:
+                return _error("Choose at least one of your documents to search.", 400)
     return session, question, states
 
 
@@ -367,10 +462,11 @@ def _sse(event: str, data) -> str:
 
 
 def _documents(session: Session) -> list[dict]:
-    return [
-        {"id": doc_id, "filename": s.name, "num_pages": s.num_pages, "num_chunks": s.num_chunks}
-        for doc_id, s in session.docs.items()
-    ]
+    with session.lock:
+        return [
+            {"id": doc_id, "filename": state.name, "num_pages": state.num_pages, "num_chunks": state.num_chunks}
+            for doc_id, state in session.docs.items()
+        ]
 
 
 def _unique_name(session: Session, filename: str) -> str:
@@ -431,8 +527,10 @@ async def ingest(request: Request, file: UploadFile = File(...)):
         return _error("Please upload a PDF, Word (.docx), text or Markdown file.", 400)
 
     session = _get_session(request)
-    if session is not None and len(session.docs) >= MAX_DOCS_PER_SESSION:
-        return _error(f"You can load up to {MAX_DOCS_PER_SESSION} documents at once. Remove one first.", 400)
+    if session is not None:
+        with session.lock:
+            if len(session.docs) >= MAX_DOCS_PER_SESSION:
+                return _error(f"You can load up to {MAX_DOCS_PER_SESSION} documents at once. Remove one first.", 400)
 
     # Read at most one byte past the limit, so an oversized upload is never
     # held in memory in full.
@@ -451,18 +549,38 @@ async def ingest(request: Request, file: UploadFile = File(...)):
     if filename.lower().endswith(".pdf") and b"%PDF-" not in pdf_bytes[:1024]:
         return _error("That file isn't a PDF. Please upload a valid PDF file.", 400)
 
-    name = _unique_name(session, filename) if session else filename
+    if session is not None:
+        with session.lock:
+            name = _unique_name(session, filename)
+    else:
+        name = filename
+    available_chunks = MAX_TOTAL_CHUNKS - _total_chunks()
+    if available_chunks <= 0:
+        return _error(
+            "The server's document memory is full. Try again later or ask "
+            "another user to free space by removing documents.",
+            503,
+        )
+    # Pass the remaining aggregate budget into the pipeline so an upload that
+    # cannot fit is rejected before embedding, not after allocating its index.
+    max_chunks_for_upload = min(MAX_CHUNKS_PER_DOC, available_chunks)
     if not await _take_slot(_ingest_slots):
         return _busy()
     try:
         # Extraction + embedding is CPU-bound; running it in a worker thread
         # keeps the event loop free to serve other users meanwhile.
         index_state = await run_in_threadpool(
-            pipeline.ingest, pdf_bytes, name=name, max_chunks=MAX_CHUNKS_PER_DOC
+            pipeline.ingest, pdf_bytes, name=name, max_chunks=max_chunks_for_upload
         )
     except pipeline.DocumentTooLargeError:
+        if max_chunks_for_upload < MAX_CHUNKS_PER_DOC:
+            return _error(
+                "The server's document memory is full for this upload. Remove "
+                "another document or try a shorter file.",
+                503,
+            )
         return _error(
-            "This PDF has too much text to process here (roughly 360 pages is the limit). "
+            "This document has too much text to process here (roughly 360 pages is the limit). "
             "Try a shorter document or split it.",
             413,
         )
@@ -487,11 +605,26 @@ async def ingest(request: Request, file: UploadFile = File(...)):
     if is_new_session:
         session_id = secrets.token_urlsafe(32)
         session = Session()
-        _sessions[session_id] = session
-        _prune_sessions()
+
+    # Re-check the aggregate budget now that this document's real size is
+    # known (other uploads may have landed while it was being indexed). A new
+    # session is registered only after the document is added, so a refused
+    # upload never leaves an empty orphan session behind.
+    if _total_chunks() + index_state.num_chunks > MAX_TOTAL_CHUNKS:
+        return _error(
+            "The server's document memory is full. Try again later or ask "
+            "another user to free space by removing documents.",
+            503,
+        )
 
     doc_id = secrets.token_urlsafe(8)
-    session.docs[doc_id] = index_state
+    with session.lock:
+        if len(session.docs) >= MAX_DOCS_PER_SESSION:
+            return _error(f"You can load up to {MAX_DOCS_PER_SESSION} documents at once. Remove one first.", 400)
+        session.docs[doc_id] = index_state
+    if is_new_session:
+        _sessions[session_id] = session
+        _prune_sessions()
 
     response = JSONResponse(
         {
@@ -520,7 +653,9 @@ async def get_session(request: Request):
     session = _get_session(request)
     if session is None:
         return {"documents": [], "history": []}
-    return {"documents": _documents(session), "history": session.history}
+    with session.lock:
+        history = list(session.history)
+    return {"documents": _documents(session), "history": history}
 
 
 def _turn(question: str, answer: str, by: dict | None) -> dict:
@@ -558,15 +693,18 @@ async def ask(request: Request):
     if not await _take_slot(_llm_slots):
         return _busy()
     try:
-        result = await run_in_threadpool(pipeline.answer, question, states, history=list(session.history))
+        with session.lock:
+            history = list(session.history)
+        result = await run_in_threadpool(pipeline.answer, question, states, history=history)
     except Exception as e:
         return _llm_error_response(e, "answering that question")
     finally:
         _llm_slots.release()
 
     by = answered_by(result["answer"])
-    session.history.append(_turn(question, result["answer"], by))
-    del session.history[:-MAX_STORED_TURNS]
+    with session.lock:
+        session.history.append(_turn(question, result["answer"], by))
+        del session.history[:-MAX_STORED_TURNS]
     return {"answer": result["answer"], "sources": result["sources"], "answered_by": by}
 
 
@@ -593,18 +731,26 @@ async def ask_stream(request: Request):
 
     if not await _take_slot(_llm_slots):
         return _busy()
+    pieces = None
     try:
+        with session.lock:
+            history = list(session.history)
         sources, pieces = await run_in_threadpool(
-            pipeline.answer_stream, question, states, history=list(session.history)
+            pipeline.answer_stream, question, states, history=history
         )
         # (kind, text) or None; pulling the first piece surfaces early errors.
         first = await run_in_threadpool(next, pieces, None)
     except Exception as e:
         _llm_slots.release()
+        if pieces is not None:
+            try:
+                pieces.close()
+            except (ValueError, StopIteration):
+                pass
         return _llm_error_response(e, "answering that question")
 
     async def events():
-        parts = []  # answer content only; reasoning is never stored
+        parts = []  # answer content only; reasoning is shown but never stored
         route = {}
         completed = False
         try:
@@ -629,8 +775,9 @@ async def ask_stream(request: Request):
                 yield _sse("token", {"text": text})
             completed = True
             answer = "".join(parts)
-            session.history.append(_turn(question, answer, route or None))
-            del session.history[:-MAX_STORED_TURNS]
+            with session.lock:
+                session.history.append(_turn(question, answer, route or None))
+                del session.history[:-MAX_STORED_TURNS]
             yield _sse("done", {})
         except Exception as e:
             reference = secrets.token_hex(4)
@@ -657,11 +804,14 @@ async def summary(request: Request):
     if limited := _rate_limited(request, "llm"):
         return limited
     session = _get_session(request)
-    if session is None or not session.docs:
+    if session is None:
         return _error("No document is loaded. Please upload a PDF first.", 400)
 
     body = await _json_body(request)
-    index_state = session.docs.get(body.get("id"))
+    with session.lock:
+        if not session.docs:
+            return _error("No document is loaded. Please upload a PDF first.", 400)
+        index_state = session.docs.get(body.get("id"))
     if index_state is None:
         return _error("That document is not loaded.", 404)
 
@@ -687,11 +837,14 @@ async def suggestions(request: Request):
     if limited := _rate_limited(request, "llm"):
         return limited
     session = _get_session(request)
-    if session is None or not session.docs:
+    if session is None:
         return _error("No document is loaded. Please upload a PDF first.", 400)
 
     body = await _json_body(request)
-    index_state = session.docs.get(body.get("id"))
+    with session.lock:
+        if not session.docs:
+            return _error("No document is loaded. Please upload a PDF first.", 400)
+        index_state = session.docs.get(body.get("id"))
     if index_state is None:
         return _error("That document is not loaded.", 404)
 
@@ -714,8 +867,10 @@ async def remove(request: Request):
     doc_id = (await _json_body(request)).get("id")
 
     if session is not None and doc_id is not None:
-        session.docs.pop(doc_id, None)
-        if session.docs:
+        with session.lock:
+            session.docs.pop(doc_id, None)
+            has_documents = bool(session.docs)
+        if has_documents:
             return {"ok": True, "documents": _documents(session)}
 
     _sessions.pop(session_id, None)

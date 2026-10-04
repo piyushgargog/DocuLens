@@ -1,5 +1,6 @@
 """Phase 6: orchestration — wires loader, chunker, embedder, vector store, LLM."""
 
+import os
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -21,12 +22,34 @@ SUMMARY_SAMPLE_CHUNKS = 10  # evenly spaced chunks fed to the summary prompt
 OVERVIEW_CHUNKS = 8  # passages given to the LLM for a whole-document question
 OVERVIEW_LEAD_CHUNKS = 2  # always include the opening (abstract/introduction)
 
+# Minimum cosine similarity for the best retrieved passage. When even the best
+# of the top-k hits is below it, a non-overview question gets no passages and
+# the model answers with its grounded refusal instead of improvising from noise.
+# Calibrated with score_floor_eval.py (reports/score_floor_eval.md): off-topic
+# and cross-document questions top out at 0.28 (median ~0.1), answerable ones
+# have a median of 0.5-0.65. 0.25 refuses ~all off-topic questions while
+# wrongly refusing only ~3% of answerable ones; 0.30 would refuse 8%. It is a
+# safety net, not the main control (the prompt's refusal rule is). Re-measure
+# on a new document set; adjust via the RETRIEVAL_SCORE_FLOOR env var.
+try:
+    RETRIEVAL_SCORE_FLOOR = float(os.environ.get("RETRIEVAL_SCORE_FLOOR", "0.25"))
+except ValueError:
+    RETRIEVAL_SCORE_FLOOR = 0.25
+RETRIEVAL_SCORE_FLOOR = max(-1.0, min(1.0, RETRIEVAL_SCORE_FLOOR))
+
 # Questions about the document as a whole ("what is this about?", "main
 # contribution", "summarize the key findings"). Similarity search is the wrong
 # tool for these: no single passage resembles the question, so it returns
 # whatever shares a word with it -- in testing, the reference list.
+# Sectional qualifiers — if any of these follow a summarize/overview verb,
+# the question is about a specific part, not the whole document.
+_SECTION_QUALIFIER = re.compile(
+    r"\b(section|chapter|part|paragraph|page|table|figure|appendix|slide)\s*\d",
+    re.IGNORECASE,
+)
+
 OVERVIEW_PATTERN = re.compile(
-    r"\b(summari[sz](e|ing)"  # "summarize", "summarising" (verb, not "summary statistic")
+    r"\b(summari[sz](e|ing)"
     r"|summary(?= of| please|\s*\?|\s*$)|(give|write|need|want)( me)? (a |the )?(short |quick |brief )?summary"
     r"|overview|gist|tl;?dr|in a nutshell"
     r"|(main|key|central|overall|primary|core|biggest) (idea|point|message|contribution|finding|takeaway|argument|goal|topic|theme)s?"
@@ -121,7 +144,10 @@ def retrieve(queries: list[str], states: list[IndexState], top_k: int = DEFAULT_
 
 
 def is_overview_question(question: str) -> bool:
-    """True for questions about a whole document rather than a specific fact."""
+    """True for questions about a whole document rather than a specific fact.
+    Sectional requests like 'summarize section 4' stay retrieval-based."""
+    if _SECTION_QUALIFIER.search(question):
+        return False
     return bool(OVERVIEW_PATTERN.search(question))
 
 
@@ -163,7 +189,13 @@ def gather_sources(
     queries = [question]
     if recent:
         queries.append(f"{recent[-1]['question']} {question}")
-    return retrieve(queries, states, top_k=top_k), recent
+    sources = retrieve(queries, states, top_k=top_k)
+    # Abstention: if every retrieved passage is below the score floor,
+    # return no sources so the LLM sees "(no passages retrieved)" and
+    # gives its grounded refusal instead of hallucinating from noise.
+    if sources and all(s["score"] < RETRIEVAL_SCORE_FLOOR for s in sources):
+        return [], recent
+    return sources, recent
 
 
 def answer(

@@ -126,3 +126,49 @@ def test_overview_question_uses_the_sample_not_retrieval(sample_pdf_bytes, monke
     result = pipeline.answer("What is this document about?", state)
     assert result["sources"] and all(s["score"] is None for s in result["sources"])
     assert seen["p"][0]["page"] == 1
+
+
+# --- Sectional overview classification ------------------------------------
+
+
+@pytest.mark.parametrize("question", [
+    "summarize section 4",
+    "Summarize chapter 3 for me",
+    "Give me an overview of table 2",
+    "summarize page 5",
+])
+def test_sectional_requests_are_not_overview(question):
+    assert not pipeline.is_overview_question(question)
+
+
+# --- Retrieval abstention gate --------------------------------------------
+
+
+def test_low_score_passages_trigger_abstention(sample_pdf_bytes, monkeypatch):
+    state = pipeline.ingest(sample_pdf_bytes)
+    # Force all scores below the floor
+    def low_retrieve(queries, states, top_k=4):
+        return [{"page": 1, "text": "irrelevant", "score": 0.1}]
+    monkeypatch.setattr(pipeline, "retrieve", low_retrieve)
+    monkeypatch.setattr(pipeline.llm_client, "ask", lambda q, p, history=None: "no answer")
+    sources, _ = pipeline.gather_sources("What is quantum entanglement?", state)
+    assert sources == []  # abstained
+
+
+def test_above_floor_passages_are_returned(sample_pdf_bytes, monkeypatch):
+    state = pipeline.ingest(sample_pdf_bytes)
+    def ok_retrieve(queries, states, top_k=4):
+        return [{"page": 1, "text": "relevant", "score": 0.5}]
+    monkeypatch.setattr(pipeline, "retrieve", ok_retrieve)
+    sources, _ = pipeline.gather_sources("What is Jupiter?", state)
+    assert len(sources) == 1
+
+
+def test_overview_questions_bypass_abstention_gate(sample_pdf_bytes, monkeypatch):
+    state = pipeline.ingest(sample_pdf_bytes)
+    # Overview should never go through retrieve at all
+    def no_retrieval(*a, **k):
+        raise AssertionError("retrieve should not be called for overview")
+    monkeypatch.setattr(pipeline, "retrieve", no_retrieval)
+    sources, _ = pipeline.gather_sources("What is this document about?", state)
+    assert len(sources) > 0  # overview sample, not abstained

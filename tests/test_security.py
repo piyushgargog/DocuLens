@@ -11,7 +11,8 @@ import main
 
 @pytest.fixture
 def client():
-    return TestClient(main.app)
+    with TestClient(main.app) as c:
+        yield c
 
 
 def _upload(client, data, name="a.pdf", headers=None):
@@ -113,6 +114,7 @@ def test_llm_endpoints_share_a_rate_limit(client, sample_pdf_bytes, monkeypatch)
 
 def test_x_real_ip_from_a_non_proxy_peer_cannot_dodge_the_limit(client, sample_pdf_bytes, monkeypatch):
     monkeypatch.setitem(main.RATE_LIMITS, "ingest", [(1, 600)])
+    client = TestClient(main.app, client=("172.17.0.1", 50000))
     assert _upload(client, sample_pdf_bytes, headers={"X-Real-IP": "1.1.1.1"}).status_code == 200
     # A different claimed address from the same (non-loopback) peer is the same client.
     assert _upload(client, sample_pdf_bytes, headers={"X-Real-IP": "2.2.2.2"}).status_code == 429
@@ -125,10 +127,56 @@ def test_one_session_cannot_reach_another_sessions_document(sample_pdf_bytes, mo
     import llm_client
 
     monkeypatch.setattr(llm_client, "summarize", lambda p, timeout=30: "secret summary")
-    alice, mallory = TestClient(main.app), TestClient(main.app)
-    doc = _upload(alice, sample_pdf_bytes).json()
-    _upload(mallory, sample_pdf_bytes)
-    # Mallory knows (or guesses) Alice's document id but has her own session.
-    assert mallory.post("/api/summary", json={"id": doc["id"]}).status_code == 404
-    assert mallory.post("/api/remove", json={"id": doc["id"]}).json()["documents"] != []
-    assert alice.post("/api/summary", json={"id": doc["id"]}).status_code == 200
+    with TestClient(main.app) as alice, TestClient(main.app) as mallory:
+        doc = _upload(alice, sample_pdf_bytes).json()
+        _upload(mallory, sample_pdf_bytes)
+        # Mallory knows (or guesses) Alice's document id but has her own session.
+        assert mallory.post("/api/summary", json={"id": doc["id"]}).status_code == 404
+        assert mallory.post("/api/remove", json={"id": doc["id"]}).json()["documents"] != []
+        assert alice.post("/api/summary", json={"id": doc["id"]}).status_code == 200
+
+
+# --- Trusted proxy CIDR validation ----------------------------------------
+
+def test_docker_bridge_proxy_is_trusted_when_configured(client, sample_pdf_bytes, monkeypatch):
+    monkeypatch.setitem(main.RATE_LIMITS, "ingest", [(1, 600)])
+    with TestClient(main.app, client=("172.17.0.1", 50000)) as client:
+        # Simulate Docker bridge peer
+        monkeypatch.setattr(main, "_TRUSTED_PROXY_NETS",
+                            [__import__('ipaddress').ip_network("172.17.0.0/16")])
+        _upload(client, sample_pdf_bytes, headers={"X-Real-IP": "203.0.113.1"})
+        # Second upload with a different X-Real-IP from the same trusted proxy is a different client
+        r = _upload(client, sample_pdf_bytes, headers={"X-Real-IP": "203.0.113.2"})
+        assert r.status_code == 200  # different client, not rate-limited
+
+
+def test_untrusted_peer_cannot_spoof_x_real_ip(client, sample_pdf_bytes, monkeypatch):
+    monkeypatch.setitem(main.RATE_LIMITS, "ingest", [(1, 600)])
+    with TestClient(main.app, client=("172.17.0.1", 50000)) as client:
+        # Default trusted proxies: loopback only. TestClient peer is "testclient".
+        _upload(client, sample_pdf_bytes, headers={"X-Real-IP": "1.1.1.1"})
+        r = _upload(client, sample_pdf_bytes, headers={"X-Real-IP": "2.2.2.2"})
+        assert r.status_code == 429  # same peer, X-Real-IP ignored
+
+
+def test_trusted_proxy_parse_ignores_invalid_cidrs(monkeypatch):
+    monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.0/8, not-a-cidr, 192.168.0.0/16")
+    nets = main._parse_trusted_proxies()
+    assert len(nets) == 2
+
+
+def test_total_chunk_budget_rejects_upload_when_full(client, sample_pdf_bytes, monkeypatch):
+    monkeypatch.setattr(main, "MAX_TOTAL_CHUNKS", 1)  # very low budget
+    response = client.post("/api/ingest", files={"file": ("a.pdf", sample_pdf_bytes, "application/pdf")})
+    assert response.status_code == 503
+    assert "memory" in response.json()["error"].lower()
+
+
+def test_refused_upload_does_not_leave_an_orphan_session(client, sample_pdf_bytes, monkeypatch):
+    # A brand-new visitor whose first upload hits the aggregate budget must not
+    # leave an empty session (with no cookie to ever reach it) in memory.
+    monkeypatch.setattr(main, "MAX_TOTAL_CHUNKS", 1)
+    before = len(main._sessions)
+    response = client.post("/api/ingest", files={"file": ("a.pdf", sample_pdf_bytes, "application/pdf")})
+    assert response.status_code == 503
+    assert len(main._sessions) == before

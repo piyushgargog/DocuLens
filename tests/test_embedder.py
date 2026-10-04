@@ -26,3 +26,37 @@ def test_related_sentences_score_higher_than_unrelated():
     sim_related = float(np.dot(vectors[0], vectors[1]))
     sim_unrelated = float(np.dot(vectors[0], vectors[2]))
     assert sim_related > sim_unrelated
+
+
+def test_prefetch_loads_the_model_only_when_enabled(monkeypatch):
+    import embedder
+
+    loads = []
+    monkeypatch.setattr(embedder, "get_model", lambda: loads.append(1))
+
+    monkeypatch.delenv("PREFETCH_MODEL", raising=False)
+    embedder.prefetch()
+    assert loads == []  # off by default: the model still loads lazily
+
+    monkeypatch.setenv("PREFETCH_MODEL", "1")
+    embedder.prefetch()
+    assert loads == [1]
+
+
+def test_app_startup_prefetches_the_model_when_enabled(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import embedder
+    import main
+
+    calls = []
+    monkeypatch.setattr(embedder, "get_model", lambda: calls.append(1))
+
+    monkeypatch.delenv("PREFETCH_MODEL", raising=False)
+    with TestClient(main.app):
+        pass
+    assert calls == []
+
+    monkeypatch.setenv("PREFETCH_MODEL", "1")
+    with TestClient(main.app):
+        assert calls == [1]  # loaded during startup, before any request
