@@ -185,6 +185,7 @@ function addError(text) {
   const el = document.createElement("p");
   el.className = "msg msg-error";
   el.setAttribute("role", "alert");
+  el.removeAttribute("aria-busy");
   el.textContent = text;
   return append(el);
 }
@@ -466,7 +467,17 @@ function buildNotes(sources, label) {
     // passage reads as prose (blank lines between paragraphs are kept).
     node.querySelector(".slip-text").textContent = src.text.replace(/(?<!\n)\n(?!\n)/g, " ");
     // In the margin, notes are clipped to a few lines; clicking one opens it.
-    slip.addEventListener("click", () => slip.classList.toggle("expanded"));
+    slip.tabIndex = 0;
+    slip.setAttribute("role", "button");
+    slip.setAttribute("aria-expanded", "false");
+    const toggleSlip = () => slip.setAttribute("aria-expanded", String(slip.classList.toggle("expanded")));
+    slip.addEventListener("click", toggleSlip);
+    slip.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggleSlip();
+      }
+    });
     list.appendChild(node);
   }
 
@@ -555,6 +566,9 @@ function answerAsText(answer) {
 function startAnswer(el, sources, { heading, sourcesLabel = "Sources" } = {}) {
   el.className = "msg msg-assistant answer msg-enter";
   el.removeAttribute("role");
+  // The conversation is a polite live region; keep this answer quiet while
+  // it is being written so screen readers announce it once, when complete.
+  el.setAttribute("aria-busy", "true");
   el.replaceChildren();
 
   const main = document.createElement("div");
@@ -662,12 +676,32 @@ function finishAnswer(answer, { followUps = false, stopped = false } = {}) {
     answer.main.appendChild(note);
   }
   const refused = answer.text.trim().startsWith(REFUSAL);
+  if (refused && answer.notes) markSearchedOnly(answer);
   if (!stopped && answer.text) {
     const bar = buildActions(answer, { followUps: followUps && !refused });
     if (answer.route) bar.appendChild(routeTag(answer.route));
     answer.main.appendChild(bar);
   }
   if (answer.notes) answer.main.appendChild(answer.notes.toggle);
+  answer.el.removeAttribute("aria-busy");
+}
+
+/** A refusal's passages were searched, not used: fold them behind the toggle
+ *  (even on wide screens) and style them as a quiet record, not as evidence. */
+function markSearchedOnly(answer) {
+  const notes = answer.notes;
+  answer.el.classList.remove("has-notes");
+  answer.el.classList.add("answer-refused");
+  notes.panel.classList.add("notes-searched");
+  notes.label = "Passages searched";
+  notes.panel.setAttribute("aria-label", "Passages searched (none answered the question)");
+  if (!notes.panel.querySelector(".notes-caption")) {
+    const caption = document.createElement("p");
+    caption.className = "notes-caption";
+    caption.textContent = "These were searched, but none of them answers the question.";
+    notes.panel.prepend(caption);
+  }
+  setNotesOpen(notes, false);
 }
 
 function showAnswer(el, text, sources, { heading, sourcesLabel = "Sources", followUps = false, route = null } = {}) {
