@@ -54,8 +54,6 @@ jobs:
         run: pytest -v
 
   e2e:
-    # Not yet proven on a CI runner: report failures without blocking merges.
-    continue-on-error: true
     # Browser end-to-end checks (tests/e2e): real server + Playwright Chromium,
     # LLM endpoints faked in the browser, so no API key is needed.
     runs-on: ubuntu-latest
