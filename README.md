@@ -665,6 +665,12 @@ without a shared session store.
   Across all sessions the server indexes at most `MAX_TOTAL_CHUNKS` chunks;
   that budget is checked before and after embedding but is a best-effort soft
   limit (two uploads racing can briefly overshoot), not a hard quota.
+- The retrieval score floor looks at the best of the question's searches. For a
+  follow-up that includes "previous question + this question", so an off-topic
+  follow-up that reuses words from the previous turn can clear the floor; the
+  model's exact-refusal rule then does the work (seen live: "What is the capital
+  of France?" after a planets question was refused, but still returned the planet
+  passages as sources).
 - The retrieval score floor was calibrated on two small sample documents; on
   very different material (non-English, tables, code) it may need adjusting.
 - Only the last 3 conversation turns are used for follow-ups, and the
