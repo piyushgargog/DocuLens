@@ -90,15 +90,17 @@ _TRUSTED_PROXY_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
 def _parse_trusted_proxies() -> list:
     raw = os.environ.get("TRUSTED_PROXIES", "127.0.0.0/8,::1/128").strip()
     nets = []
-    for cidr in raw.split(","):
+    for position, cidr in enumerate(raw.split(","), start=1):
         cidr = cidr.strip()
         if not cidr:
             continue
         try:
             nets.append(ipaddress.ip_network(cidr, strict=False))
         except ValueError:
-            log.warning("Ignoring invalid TRUSTED_PROXIES entry: %s", cidr)
+            # Log the position only, never the configured text.
+            log.warning("Ignoring invalid TRUSTED_PROXIES entry #%d", position)
     return nets
+
 
 _TRUSTED_PROXY_NETS = _parse_trusted_proxies()
 
