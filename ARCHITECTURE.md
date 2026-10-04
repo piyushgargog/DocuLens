@@ -170,7 +170,9 @@ value comes from `score_floor_eval.py` (`reports/score_floor_eval.md`):
 off-topic and cross-document questions top out at 0.28 (median ≈ 0.1) while
 answerable ones have a median of 0.5–0.65; 0.25 wrongly refuses ~3% of
 answerable questions (0.30 would refuse 8%). It is a safety net layered on the
-prompt's refusal rule, not a replacement, and should be re-measured on new
+prompt's refusal rule, not a replacement (a follow-up is also searched as
+"previous question + question", so an off-topic follow-up that reuses the
+previous turn's words can clear the floor and rely on the refusal rule alone), and should be re-measured on new
 document sets. Overview questions bypass it (they use an ordered sample, not
 similarity); "summarize section 4" is recognised as a specific-part question
 (`_SECTION_QUALIFIER`) and goes through retrieval and the floor.
