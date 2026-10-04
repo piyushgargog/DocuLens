@@ -657,6 +657,9 @@ Elastic IP, load balancer, NAT gateway, or RDS were created; the
 instance's own public IPv4 is used directly, with the domain pointed at
 it via DuckDNS's dynamic DNS.
 
+The container is started with `--log-opt max-size=10m --log-opt max-file=3` so
+Docker's default unlimited log files can't fill the small root disk.
+
 `LLM_API_KEY`/`LLM_BASE_URL`/`LLM_MODEL` were set via a `.env` file
 transferred directly to the instance over `scp` and passed to the
 container with `--env-file` — never committed, never part of the Docker
