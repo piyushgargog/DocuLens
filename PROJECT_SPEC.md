@@ -5,7 +5,7 @@ small, self-contained RAG (Retrieval-Augmented Generation) tool for asking
 grounded questions about uploaded PDFs. It started as a single-document
 tool; the optional enhancements listed originally (multiple documents,
 conversation history, document summary) have since been built and are now
-part of the requirements below. _Current as of v3.5.0._
+part of the requirements below. _Current as of v3.6.0._
 
 ## Problem
 
@@ -109,5 +109,5 @@ Build a document question-answering tool that:
 - Python, PyMuPDF, sentence-transformers, FAISS, a configurable
   OpenAI-compatible LLM API, and a FastAPI backend serving a static
   HTML/CSS/JS frontend.
-- Must actually run and be tested before being called done — 103 automated
+- Must actually run and be tested before being called done — 146 automated
   tests plus real-browser checks of the deployed app (see `README.md`).

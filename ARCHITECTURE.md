@@ -1,6 +1,6 @@
 # Architecture — DocuLens
 
-_Current as of v3.5.0._
+_Current as of v3.6.0._
 
 ## Overview
 
@@ -38,7 +38,12 @@ documented chunking evaluation stays valid.
    documents (each its own `IndexState`) and the last 10 Q/A turns. Sessions
    expire after 2 hours idle — enforced by a background task (started in the
    app's `lifespan`) every 5 minutes, not only when a request arrives — and at
-   most 50 are kept (oldest-idle evicted), so memory is bounded. Uploaded PDFs
+   most 50 are kept (oldest-idle evicted). A configurable `MAX_TOTAL_CHUNKS`
+   budget (75,000 by default) provides an additional aggregate memory guard.
+   Active API responses refresh the browser cookie expiry without rotating the
+   anonymous session ID. Each `Session` has its own `RLock` guarding its
+   documents, history and last-used time, because ingestion, answering and the
+   sweeper run on different worker threads. Uploaded documents
    are never written to disk: the upload's temporary spool file is closed
    right after reading, and only extracted text and embeddings are kept, in
    memory, for the life of the session. Ingestion and LLM calls run in a worker thread
@@ -81,7 +86,10 @@ documented chunking evaluation stays valid.
 5. **Embedder** (`embedder.py`)
    `sentence-transformers/all-MiniLM-L6-v2`, L2-normalized 384-dim vectors.
    The model is a module-level singleton (loaded once per process), plain
-   Python so it works the same from `main.py`, `evaluate.py` and tests.
+   Python so it works the same from `main.py`, `evaluate.py` and tests. With
+   `PREFETCH_MODEL=1` the app's `lifespan` loads it at startup
+   (`embedder.prefetch()`, in a worker thread) so the first upload doesn't pay
+   the ~2 s load; otherwise it loads lazily on first use.
 
 6. **Vector store** (`vector_store.py`)
    One FAISS `IndexFlatIP` per document; on normalized vectors inner product
@@ -153,6 +161,20 @@ document and one query this is exactly the "Hybrid" retriever measured in
 alone); a test pins that equivalence, and `retrieval_eval.py` imports the
 same functions.
 
+**Abstention floor (v3.6.0).** For non-overview questions `gather_sources()`
+compares the best displayed cosine score of the top-k hits with
+`RETRIEVAL_SCORE_FLOOR` (0.25). If even the best hit is below it, no passages
+are passed on — the prompt contains "(no passages retrieved)" and the model
+returns its exact refusal — instead of letting it improvise from noise. The
+value comes from `score_floor_eval.py` (`reports/score_floor_eval.md`):
+off-topic and cross-document questions top out at 0.28 (median ≈ 0.1) while
+answerable ones have a median of 0.5–0.65; 0.25 wrongly refuses ~3% of
+answerable questions (0.30 would refuse 8%). It is a safety net layered on the
+prompt's refusal rule, not a replacement, and should be re-measured on new
+document sets. Overview questions bypass it (they use an ordered sample, not
+similarity); "summarize section 4" is recognised as a specific-part question
+(`_SECTION_QUALIFIER`) and goes through retrieval and the floor.
+
 **Routing whole-document questions.** Similarity search answers "where
 does the document talk about X". A question about the document as a whole
 ("what is this paper about?", "main contribution", "summarize the key
@@ -172,15 +194,24 @@ contract is unchanged: no facts, numbers or examples beyond the passages,
 one exact refusal string when nothing is relevant, and passages declared
 untrusted content fenced between `<<<BEGIN PASSAGES>>>` / `<<<END
 PASSAGES>>>`, so an instruction inside a PDF is reported, not obeyed
-(`tests/test_prompt_injection.py`). With earlier turns, one more rule says
-they may resolve references but are never evidence.
+(`tests/test_prompt_injection.py`). Delimiter tokens found inside uploaded
+passage text and filenames are replaced with inert Unicode lookalikes before
+prompt construction. Earlier turns may resolve references but are never
+trusted as evidence. Whole-document overview questions use a bounded sample;
+section-specific requests stay on normal retrieval and abstention paths.
 
 **Streaming.** `llm_client.ask_stream()` sends `stream: true` and yields
 content deltas from the provider's SSE stream (decoded as UTF-8 explicitly —
 providers omit the charset and `requests` would otherwise assume
-ISO-8859-1). `main.py` fetches the sources and the *first* piece before
-opening the response, so configuration, rate-limit and provider errors still
-return a normal HTTP status; after that, a failure becomes an `error` event.
+ISO-8859-1). Providers that expose their reasoning (Groq's gpt-oss, OpenRouter's
+Nemotron) stream it as a separate delta; it is forwarded as a `reasoning` SSE
+event for the collapsible "Thinking" panel, but is display-only — never saved
+to the history, never sent back to the model, and a reasoning stream from a
+route that then fails is discarded. `main.py` fetches the sources and the
+*first* piece before opening the response, so configuration, rate-limit and
+provider errors still return a normal HTTP status; after that, a failure
+becomes an `error` event. A connection that drops mid-stream is wrapped in
+`LLMRequestError` so provider failover and cooldown still apply.
 The turn is saved to the history only when the stream completes, so a
 stopped answer never becomes context. The response carries
 `X-Accel-Buffering: no` so Nginx passes events through immediately.
@@ -250,8 +281,8 @@ Two scripts sit beside the app and call the pipeline modules directly:
 
 | Threat | Control |
 |---|---|
-| Quota or CPU exhaustion by one client | Per-IP rate limits (`RATE_LIMITS`): LLM endpoints 10/min and 100/h, uploads 10/10 min; IP from `X-Real-IP` only when the peer is the loopback proxy |
-| Memory exhaustion by a huge document | `MAX_CHUNKS_PER_DOC` (1500 ≈ 360 pages) checked before embedding; 5 docs/session; 50 sessions |
+| Quota or CPU exhaustion by one client | Per-IP rate limits (`RATE_LIMITS`): LLM endpoints 10/min and 100/h, uploads 10/10 min; `X-Real-IP` is accepted only from a peer in the configured `TRUSTED_PROXIES` CIDRs |
+| Memory exhaustion by a huge or aggregate document set | `MAX_CHUNKS_PER_DOC` (1500), `MAX_TOTAL_CHUNKS` (75,000 default), 5 docs/session, 50 sessions |
 | Non-PDF uploads | `%PDF-` signature check in the first 1024 bytes |
 | Hostile filenames | Basename only, control characters stripped, 120-character cap |
 | XSS / clickjacking / injection of external resources | CSP `default-src 'self'` with no inline code, `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`; all dynamic text via `textContent` |
@@ -261,10 +292,12 @@ Two scripts sit beside the app and call the pipeline modules directly:
 | Cross-site request forgery | SameSite=Lax cookie, plus a middleware that refuses API POSTs whose `Origin` isn't this host or whose `Sec-Fetch-Site` is `cross-site` |
 | Session cookie tampering | `__Host-session` over HTTPS: must be Secure, Path=/, no Domain, so no subdomain or HTTP response can set it |
 | Oversized JSON bodies | 16KB cap (`Content-Length` check in middleware, and on the body actually read) |
+| Rate-limit evasion by spoofing `X-Real-IP` | The header is honoured only when the immediate peer is inside `TRUSTED_PROXIES`; any other peer is rate-limited by its own address |
 | Overload (smoothness) | Semaphores: 4 concurrent LLM calls, 2 concurrent ingestions; wait ≤ 20s, then 503 "busy" with `Retry-After` |
 | Vulnerable dependencies | Dependabot updates; `pip-audit` in CI fails the build on any known advisory |
 | Cross-session access (IDOR) | Document ids are looked up only inside the caller's own session (256-bit cookie) |
-| Prompt injection via PDF text | Passages fenced and declared untrusted (see Generation) |
+| Prompt injection via PDF text or filenames | Passages fenced and declared untrusted; fence tokens inside source text and names are neutralized before prompting |
+| Weak retrieval / hallucination risk | Non-overview hits below `RETRIEVAL_SCORE_FLOOR` (0.25 default) are withheld from the LLM; overview routing is limited to whole-document questions |
 | Third-party data flow | Page loads nothing external; only the question + retrieved passages go to the LLM provider, disclosed on the upload screen |
 
 ## Failure Handling
@@ -281,6 +314,9 @@ Two scripts sit beside the app and call the pipeline modules directly:
 | Proxy returns an HTML error page | `app.js` `api()` | readable error, never a frozen screen |
 | Stale cached frontend after a deploy | `Cache-Control: no-cache` + `?v=` asset URLs | always the current script |
 | Question not answerable from the document | system prompt | the exact refusal string |
+| Best passage below the similarity floor | `pipeline.gather_sources()` | no passages sent; the exact refusal string |
+| Server-wide chunk budget exhausted | `main.py` `ingest()` (`MAX_TOTAL_CHUNKS`) | 503 "document memory is full" |
+| Connection drops mid-stream | `llm_client._stream_deltas` → `LLMRequestError` | provider cooldown/failover before the first token; an `error` event after |
 | Instructions embedded in a PDF | fenced passages + untrusted-content rule | reported as document text, not obeyed |
 
 ## Deployment
@@ -289,6 +325,8 @@ A single AWS EC2 `t3.small` behind Nginx (HTTPS via Let's Encrypt,
 `client_max_body_size 25m`, 120s proxy timeouts), running the container with
 `--restart unless-stopped` and the API key passed via `--env-file`. The
 `Dockerfile` installs CPU-only PyTorch to avoid ~GBs of unused CUDA wheels.
-Because sessions live in process memory, the app is designed for one
+Behind the Docker port mapping the app sees Nginx as the bridge gateway
+rather than loopback, so `TRUSTED_PROXIES` must include it (see
+`README.md`). Because sessions live in process memory, the app is designed for one
 instance; scaling out would need a shared session store. Details and the
 platform comparison are in `README.md` and `DECISIONS.md`.

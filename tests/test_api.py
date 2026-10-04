@@ -23,7 +23,8 @@ requires_api_key = pytest.mark.skipif(
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
 
 
 def test_index_page_served(client):
@@ -130,7 +131,7 @@ def test_second_upload_adds_a_document_to_the_same_session(client, sample_pdf_by
     first = client.post("/api/ingest", files={"file": ("a.pdf", sample_pdf_bytes, "application/pdf")})
     second = client.post("/api/ingest", files={"file": ("a.pdf", sample_pdf_bytes, "application/pdf")})
     assert second.status_code == 200
-    assert "session_id" not in second.cookies  # existing session reused, not replaced
+    assert second.cookies.get("session_id") == first.cookies.get("session_id")  # existing session reused, not replaced
     names = [d["filename"] for d in second.json()["documents"]]
     assert names == ["a.pdf", "a (2).pdf"]
     assert first.json()["id"] != second.json()["id"]
@@ -303,3 +304,16 @@ def test_responses_carry_a_request_id(client):
     # A client-supplied id is echoed back (for log correlation).
     r2 = client.get("/api/status", headers={"X-Request-ID": "abc123trace"})
     assert r2.headers["X-Request-ID"] == "abc123trace"
+
+def test_session_cookie_max_age_is_refreshed_on_active_requests(client, sample_pdf_bytes):
+    # The initial ingest sets the cookie
+    first = client.post("/api/ingest", files={"file": ("a.pdf", sample_pdf_bytes, "application/pdf")})
+    assert "session_id" in first.cookies
+    # A subsequent API request should refresh the cookie max-age
+    session_resp = client.get("/api/session")
+    # The Set-Cookie header should be present with the same session id
+    set_cookie = session_resp.headers.get("set-cookie", "")
+    assert "session_id=" in set_cookie
+    assert "Max-Age=" in set_cookie
+    import main
+    assert str(main.SESSION_TTL_SECONDS) in set_cookie

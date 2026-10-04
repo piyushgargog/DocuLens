@@ -439,3 +439,24 @@ understood and explainable without AI help (the task requires it):
 - **3.5.0:** UX polish (reading-screen facts and progress bar, instant
   starter questions, thinking-panel polish, a landing page with an example
   cited answer). Frontend only; verified headless with zero console errors.
+
+## Version 3.6.0
+
+- Production hardening, driven by two outside code reviews of the repository
+  (their findings were treated as claims to verify, not instructions). The
+  assistant read both proposed pull requests line by line before touching
+  anything. Of the proposed changes it kept the ones that held up — trusted-proxy
+  CIDR handling for rate limiting, neutralising prompt-fence tokens in uploaded
+  text and filenames, labelling earlier chat turns as untrusted, per-session
+  locks, a server-wide chunk budget, wrapping mid-stream network failures — and
+  rejected or reworked the rest: one proposal removed the "show thinking"
+  feature while claiming no breaking changes; another shipped a "prefetch" that
+  recursed forever when enabled (reproduced with a stub model) and a similarity
+  floor with no measurement behind it.
+- The retrieval abstention floor was measured instead of guessed
+  (`score_floor_eval.py`): the assistant wrote the script, ran it on both
+  sample documents with answerable, off-topic and cross-document questions, and
+  chose 0.25 over the proposed 0.30 because 0.30 wrongly refused 8% of
+  answerable questions against 3%.
+- Tests were rewritten so every new behaviour is covered (the proposals shipped
+  with almost none). 146 tests pass.

@@ -108,7 +108,10 @@ a PR:
   update the affected package (Dependabot usually already has a PR).
 - If your change touches retrieval or chunking, run `python
   retrieval_eval.py` and compare Hit@4 / MRR with
-  `reports/retrieval_eval.md` (no API key needed). If it touches the prompt,
+  `reports/retrieval_eval.md` (no API key needed). If it touches the
+  similarity floor (`RETRIEVAL_SCORE_FLOOR`) or the embedding model, also run
+  `python score_floor_eval.py` and check that answerable questions are still
+  almost never refused (`reports/score_floor_eval.md`). If it touches the prompt,
   also run `evaluate.py` against a document and question set and check the
   comparison report for regressions:
   ```bash
