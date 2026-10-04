@@ -4,7 +4,7 @@ A Retrieval-Augmented Generation (RAG) tool that answers questions about
 the documents you upload — grounded strictly in their content, with the exact
 source page and passage shown beside every answer.
 
-**Live:** https://doculens.duckdns.org — **Latest release:** v3.6.0
+**Live:** https://doculens.duckdns.org — **Latest release:** v3.6.1
 
 ## What it does
 
@@ -23,6 +23,27 @@ that isn't actually in the source (hallucination). This project combines
 retrieval (find the relevant passages) with generation (answer from only
 those passages) so answers stay traceable back to the source text.
 
+## What's new in v3.6.1
+
+- **Starter questions appear once.** "Try asking" used to show three generic
+  questions, remove them half a second later and show the model's tailored ones,
+  so the panel seemed to flash twice. Quiet placeholders now hold the spot and
+  the tailored questions replace them in place (the generic ones are only a
+  fallback if the tailored ones can't be fetched).
+- **The page arrives gently and the footer heart beats again, also with
+  "reduce motion" on.** Windows' *Show animations: off* turns on the browser's
+  reduced-motion setting, which flattened every entrance to an instant pop and
+  stopped the heart. Reduced motion now means no movement but still a soft
+  opacity fade in reading order, and a slow opacity pulse on the heart. The
+  normal heartbeat (removed in v3.3.0) is back for everyone else.
+- **Fix: the suggested "main focus" question was refused.** A question the app
+  itself suggested ("What is the main focus of the resume?") answered "not in the
+  document". The v3.6.0 abstention floor was refusing it (its similarity score,
+  0.21, was below 0.25); on a real one-page resume answerable questions scored
+  0.06-0.27, no different from an off-topic one (0.05). **The floor is now off by
+  default** (see "Score-floor calibration"), and "main focus / purpose / subject
+  of this document / resume / thesis..." is routed as a whole-document question.
+
 ## What's new in v3.6.0 — production hardening
 
 - **Correct rate limiting behind a proxy.** `X-Real-IP` is trusted only from
@@ -30,13 +51,12 @@ those passages) so answers stay traceable back to the source text.
   Docker's bridge the proxy used to look like an untrusted peer, so every
   visitor shared one rate-limit bucket; now it is configurable and still
   can't be spoofed by a direct client.
-- **Abstain instead of improvising.** When even the best of the top-4 hits
-  scores below `RETRIEVAL_SCORE_FLOOR` (0.25), a non-overview question gets no
-  passages and the model returns the exact refusal. The value was measured,
-  not guessed: [`score_floor_eval.py`](score_floor_eval.py) →
-  [`reports/score_floor_eval.md`](reports/score_floor_eval.md). "Summarize
-  section 4" is now treated as a specific-section question, not a whole-document
-  overview.
+- **Optional abstention floor.** `RETRIEVAL_SCORE_FLOOR` can withhold passages
+  (and force the exact refusal) when even the best hit is too dissimilar to the
+  question. Shipped on at 0.25 in v3.6.0 and **switched off by default in v3.6.1**:
+  it refused real questions on short documents (see "Score-floor calibration").
+  [`score_floor_eval.py`](score_floor_eval.py) measures it. "Summarize section 4"
+  is now treated as a specific-section question, not a whole-document overview.
 - **Sturdier prompt-injection defence.** The prompt's `<<<BEGIN/END
   PASSAGES>>>` fence tokens are neutralised if they appear inside uploaded text
   or a filename; earlier chat turns are labelled as untrusted references; the
@@ -93,7 +113,7 @@ those passages) so answers stay traceable back to the source text.
 - A clean, modern interface (v2.1.0): documents sidebar card, chat-style
   conversation with a floating composer, light and dark themes, a
   keyboard-accessible, mobile-responsive layout, restrained motion that
-  responds to what you do (and switches off under reduced-motion
+  responds to what you do (reduced to soft fades under reduced-motion
   settings), and a full footer with the author credit, repository and
   release links, a privacy dialog and the running version — no frontend framework, no
   build step, just static HTML/CSS/JS served by the backend. The design
@@ -110,7 +130,7 @@ those passages) so answers stay traceable back to the source text.
   these types are accepted; non-PDF files are split into even pages so
   citations stay meaningful.
 - **Rich, readable answers** (v3.2.0): responses render as proper Markdown — headings, bold, bullet/numbered lists, tables, code — with page citations as inline chips, built safely (no innerHTML), for a Claude/ChatGPT-grade reading experience.
-- **"Calm Light" design** (v3.4.0–v3.5.0): a quiet, Claude-style interface — ink on warm near-white, one terracotta accent, Newsreader serif over Inter, light and dark themes — with a reading-screen progress bar, instant "Try asking" starters and an example cited answer on the landing page (`DESIGN.md`).
+- **"Calm Light" design** (v3.4.0–v3.5.0): a quiet, Claude-style interface — ink on warm near-white, one terracotta accent, Newsreader serif over Inter, light and dark themes — with a reading-screen progress bar, "Try asking" starters that fill in once the model has written them (v3.6.1) and an example cited answer on the landing page (`DESIGN.md`).
 - **Shows the model's thinking** (v2.3.0): when the model exposes its
   reasoning, it streams into a collapsible "Thinking…" panel that folds to
   "Thought for Ns", like ChatGPT. Reasoning is display-only: never saved to
@@ -317,7 +337,7 @@ Optional production settings (all have safe defaults):
 |---|---|---|
 | `TRUSTED_PROXIES` | `127.0.0.0/8,::1/128` | CIDRs whose `X-Real-IP` header is trusted for rate limiting. Behind a Docker port-publish set the bridge gateway, e.g. `172.17.0.1/32,127.0.0.0/8,::1/128`. Never `0.0.0.0/0`. |
 | `MAX_TOTAL_CHUNKS` | `75000` | Server-wide cap on indexed chunks (≈3 KB each); uploads that don't fit get a 503. Lower it on small hosts. |
-| `RETRIEVAL_SCORE_FLOOR` | `0.25` | Best-hit cosine similarity below which a non-overview question is refused without calling the model. Re-measure with `score_floor_eval.py` on new document sets. |
+| `RETRIEVAL_SCORE_FLOOR` | `0` (off) | Opt-in: best-hit cosine similarity below which a non-overview question is refused without calling the model. Off by default because it wrongly refuses questions on short documents; measure it with `score_floor_eval.py` on your own documents before enabling it. |
 | `PREFETCH_MODEL` | `0` | `1` loads the embedding model at startup instead of on the first upload. |
 | `LOG_LEVEL`, `SENTRY_DSN` | `INFO`, empty | Logging verbosity; opt-in error reporting. |
 
@@ -434,11 +454,12 @@ LLM, so a few things are handled deliberately:
   sessions per server, and sessions expire after 2 hours of inactivity. A
   best-effort `MAX_TOTAL_CHUNKS` budget (75,000 by default) also limits the
   aggregate in-memory index footprint; tune it down for small hosts.
-- **RAG abstention**: non-overview retrieval is gated by a configurable
-  `RETRIEVAL_SCORE_FLOOR` (0.25 by default). If every retrieved passage is
-  below the floor, the LLM receives no passages and must return the fixed
-  grounded refusal rather than answer from weak context. Whole-document
-  overview questions intentionally use a document-order sample instead.
+- **Grounded refusal**: the model must answer only from the retrieved passages
+  or return one exact refusal string. An optional similarity floor
+  (`RETRIEVAL_SCORE_FLOOR`, off by default) can additionally withhold weak
+  passages; it is opt-in because similarity alone can't tell a short or
+  pronoun-heavy question from an unrelated one. Whole-document overview
+  questions use a document-order sample instead of similarity search.
 - **Rendering**: all dynamic content is inserted via `textContent` (see
   above), never raw HTML or markdown interpretation.
 
@@ -458,9 +479,9 @@ pip install -r requirements-dev.txt
 pytest -v
 ```
 
-The suite has 146 tests (a handful that call a real LLM skip without a
+The suite has 153 tests (a handful that call a real LLM skip without a
 key); the new v3.6.0 code is covered by tests for proxy-CIDR trust, the chunk
-budget, fence-token neutralisation, history labelling, the abstention gate,
+budget, fence-token neutralisation, history labelling, the (opt-in) abstention gate,
 mid-stream network errors, cookie refresh and startup prefetch.
 
 Tests that call a real LLM API skip automatically if `LLM_API_KEY` isn't
@@ -570,23 +591,31 @@ flatters keyword search. Full results, per-question misses and timings:
 python retrieval_eval.py --output reports/retrieval_eval.md --chart reports/retrieval_eval.svg
 ```
 
-### Score-floor calibration (v3.6.0)
+### Score-floor calibration (v3.6.0, revised in v3.6.1)
 
 `RETRIEVAL_SCORE_FLOOR` withholds passages when the best hit is too dissimilar
 to the question. `score_floor_eval.py` scores the best top-4 hit for answerable
 questions, off-topic questions and cross-document questions and shows how many
-each floor would refuse (no LLM calls):
+each floor would refuse (no LLM calls).
 
-- Off-topic and cross-document questions top out at **0.28** (median ≈ 0.1);
-  answerable ones have a median of **0.5–0.65**.
-- **0.25** refuses essentially all off-topic questions while wrongly refusing
-  about 3% of answerable ones (1 of 39, a question about a cited reference).
-  **0.30** would catch the last off-topic outlier but refuse 8% of answerable
-  questions, so 0.25 was chosen: wrongly refusing a real question is worse than
-  letting the model, which still has its exact-refusal rule, handle a borderline one.
-- Caveat: two small sample documents, hand-written questions. Re-measure on
-  your own documents; the floor is a safety net, not the main hallucination
-  control (the grounding prompt is).
+**What happened, stated plainly.** On the two sample documents the floor looked
+safe: off-topic and cross-document questions top out at 0.28 (median about 0.1)
+while answerable ones have a median of 0.5-0.65, and 0.25 wrongly refused ~3% of
+answerable questions. v3.6.0 shipped it on at 0.25. The first real upload broke
+it: on a one-page resume, answerable questions scored **0.06-0.27** ("where did he
+work?" 0.06, "education?" 0.19, "main focus?" 0.21, "skills?" 0.25), the same
+range as an unrelated question (0.05). Short documents and generic or
+pronoun-heavy questions simply have low cosine similarity to their own answers,
+so no threshold separates them from off-topic ones. The two sample documents were
+too few and too uniform to reveal that.
+
+**Decision (v3.6.1):** the floor is **off by default** (`RETRIEVAL_SCORE_FLOOR=0`).
+The control that matters is the grounding prompt's exact-refusal rule, which
+handled the resume correctly: "capital of France?" was refused, and the "main
+focus" question was answered once it was routed as a whole-document question.
+Enabling the floor remains possible for corpora where it measures well; run
+`score_floor_eval.py` on your own documents and check that answerable questions
+are almost never refused before turning it on.
 
 ```bash
 python score_floor_eval.py --output reports/score_floor_eval.md
@@ -665,14 +694,11 @@ without a shared session store.
   Across all sessions the server indexes at most `MAX_TOTAL_CHUNKS` chunks;
   that budget is checked before and after embedding but is a best-effort soft
   limit (two uploads racing can briefly overshoot), not a hard quota.
-- The retrieval score floor looks at the best of the question's searches. For a
-  follow-up that includes "previous question + this question", so an off-topic
-  follow-up that reuses words from the previous turn can clear the floor; the
-  model's exact-refusal rule then does the work (seen live: "What is the capital
-  of France?" after a planets question was refused, but still returned the planet
-  passages as sources).
-- The retrieval score floor was calibrated on two small sample documents; on
-  very different material (non-English, tables, code) it may need adjusting.
+- Even a refused answer lists the passages that were retrieved for it (the best
+  four by similarity, whatever they scored), so "I could not find the answer"
+  can still show source cards: they are what was searched, not evidence. The
+  optional similarity floor that would hide them is off by default because it
+  also hid real answers on short documents.
 - Only the last 3 conversation turns are used for follow-ups, and the
   follow-up retrieval simply combines the previous and current question
   (no LLM query rewriting, to avoid an extra API call per question).

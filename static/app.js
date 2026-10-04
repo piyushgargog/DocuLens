@@ -811,8 +811,9 @@ async function uploadAdditional(file) {
   addNote(`Added ${data.filename}. Questions now search all ${data.documents.length} documents.`);
 }
 
-// Generic starters shown instantly so "Try asking" never feels like it's
-// waiting on the model; they're replaced by tailored questions when ready.
+// Generic starters: only a fallback, shown if the model's tailored questions
+// can't be fetched. While they load, quiet placeholders hold the spot, so the
+// list appears exactly once instead of showing, vanishing and reappearing.
 const STARTER_QUESTIONS = [
   "What is this document about?",
   "Summarize the key points.",
@@ -828,8 +829,9 @@ function makeSuggestion(question) {
   return button;
 }
 
-/** Show starter questions immediately, then swap in the model's tailored ones
- *  when they arrive. Best-effort: on any error the generic starters remain. */
+/** Hold the "Try asking" spot with placeholders, then fill it once with the
+ *  model's tailored questions. Best-effort: on any error the generic starters
+ *  are used instead. */
 async function showSuggestions(docId) {
   const box = document.createElement("div");
   box.className = "msg suggestions";
@@ -839,19 +841,21 @@ async function showSuggestions(docId) {
   box.appendChild(label);
   const list = document.createElement("div");
   list.className = "suggestion-list";
-  for (const q of STARTER_QUESTIONS) list.appendChild(makeSuggestion(q));
+  list.setAttribute("aria-busy", "true");
+  for (let i = 0; i < STARTER_QUESTIONS.length; i++) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "suggestion-skeleton";
+    placeholder.setAttribute("aria-hidden", "true");
+    list.appendChild(placeholder);
+  }
   box.appendChild(list);
   append(box);
 
   const data = await api("/api/suggestions", { id: docId });
-  if (data.error || !data.questions || data.questions.length === 0) return;
-  // Swap generic starters for the tailored ones with a soft cross-fade.
-  list.classList.add("swapping");
-  setTimeout(() => {
-    list.replaceChildren(...data.questions.map(makeSuggestion));
-    list.classList.remove("swapping");
-    scrollToBottom();
-  }, 160);
+  const tailored = !data.error && Array.isArray(data.questions) && data.questions.length > 0;
+  list.replaceChildren(...(tailored ? data.questions : STARTER_QUESTIONS).map(makeSuggestion));
+  list.removeAttribute("aria-busy");
+  scrollToBottom();
 }
 
 async function summarizeDoc(doc, button) {

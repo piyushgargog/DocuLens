@@ -52,8 +52,8 @@ For context before reporting an issue, see the "Security notes" section of
   Oversized documents are rejected before embedding, a best-effort aggregate
   chunk budget limits total in-memory indexes, and OCR of scanned PDFs is bounded
   (at most 30 pages) so one upload cannot turn into unbounded CPU work.
-  Retrieval also abstains when all non-overview hits fall below the calibrated
-  score floor.
+  An optional similarity floor (`RETRIEVAL_SCORE_FLOOR`, off by default) can
+  make retrieval abstain on weak matches.
 - The upload screen discloses that questions and relevant passages are sent
   to the LLM provider.
 - Dependencies are watched by Dependabot, and CodeQL scans every push.

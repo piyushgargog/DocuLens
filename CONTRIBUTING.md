@@ -109,9 +109,10 @@ a PR:
 - If your change touches retrieval or chunking, run `python
   retrieval_eval.py` and compare Hit@4 / MRR with
   `reports/retrieval_eval.md` (no API key needed). If it touches the
-  similarity floor (`RETRIEVAL_SCORE_FLOOR`) or the embedding model, also run
-  `python score_floor_eval.py` and check that answerable questions are still
-  almost never refused (`reports/score_floor_eval.md`). If it touches the prompt,
+  similarity floor (`RETRIEVAL_SCORE_FLOOR`, off by default) or the embedding
+  model, also run `python score_floor_eval.py`, and try at least one short
+  real-world document (a resume, a one-page memo): the sample documents alone
+  hid a floor that refused real questions (`reports/score_floor_eval.md`). If it touches the prompt,
   also run `evaluate.py` against a document and question set and check the
   comparison report for regressions:
   ```bash

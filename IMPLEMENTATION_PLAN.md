@@ -83,7 +83,7 @@ optional enhancements (Phase 10) only happen if 0–9 are solid.
 - Run the same question set under **two** chunking/retrieval configurations (e.g. small chunks/low top-k vs. larger chunks/higher top-k); record observed differences in `DECISIONS.md`.
 - Also exercise: invalid/empty PDF, missing API key.
 - **Depends on**: Phase 7 (needs the full app running).
-- _Status:_ done (see `DECISIONS.md`, Real-World Validation); plus a committed `pytest` suite (146 tests) and CI.
+- _Status:_ done (see `DECISIONS.md`, Real-World Validation); plus a committed `pytest` suite (153 tests) and CI.
 
 ## Phase 9 — README + Final Review
 - Write `README.md`: overview, architecture summary, setup, how to run, usage, testing/results, limitations.
@@ -121,9 +121,14 @@ Added later, each with its reasoning in `DECISIONS.md`:
   retrieval in production, per-question document scope, copy/export,
   new composer, concurrency limits, CSRF guard, `__Host-` cookie,
   `pip-audit` in CI.
+- v3.6.1: fixes after the first real-document test: suggested questions
+  appear once (placeholders, no flash), the landing fade and footer heart work
+  with "reduce motion" on, and the v3.6.0 similarity floor is off by default
+  after it refused answerable resume questions; "main focus / purpose of this
+  document" is a whole-document question.
 - v3.6.0: production-hardening pass — `TRUSTED_PROXIES` for correct per-IP
-  rate limiting behind Docker/Nginx, a measured retrieval-score abstention
-  floor (`score_floor_eval.py`), prompt-fence/filename/history injection
+  rate limiting behind Docker/Nginx, an optional retrieval-score abstention
+  floor (`score_floor_eval.py`; off by default since v3.6.1), prompt-fence/filename/history injection
   hardening, per-session locks, a server-wide `MAX_TOTAL_CHUNKS` budget, a
   sliding session-cookie expiry, mid-stream failure handling, and optional
   startup model prefetch.

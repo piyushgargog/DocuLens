@@ -72,7 +72,13 @@ def main() -> None:
         f"Current floor: {pipeline.RETRIEVAL_SCORE_FLOOR}. Cells under `<x` are the share of "
         "questions whose best top-4 hit scores below x, i.e. the share that would be refused "
         "without calling the LLM. In-scope rows should stay near 0%; off-topic and cross-doc rows "
-        "should be high."
+        "should be high.\n\n"
+        "**Caveat, learned the hard way (v3.6.1):** these sample documents and hand-written questions "
+        "made a 0.25 floor look safe, but on a real one-page resume answerable questions scored "
+        "0.06-0.27 (\"where did he work?\" 0.06, \"education?\" 0.19, \"main focus?\" 0.21) -- the same "
+        "range as an off-topic one (0.05) -- so the floor refused real questions. It is therefore "
+        "off by default (RETRIEVAL_SCORE_FLOOR=0). Add your own short, real documents here before "
+        "trusting any value."
     )
     print(table, "\n\n" + note)
     if args.output:

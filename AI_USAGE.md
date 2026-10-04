@@ -460,3 +460,19 @@ understood and explainable without AI help (the task requires it):
   answerable questions against 3%.
 - Tests were rewritten so every new behaviour is covered (the proposals shipped
   with almost none). 146 tests pass.
+
+## Version 3.6.1
+
+- Fixes after the user's first real-document test. The assistant had chosen and
+  documented a retrieval-similarity floor in 3.6.0 from two sample documents; the
+  user's own resume exposed that it refused answerable questions (including one
+  the app itself suggested). The assistant reproduced it by scoring the resume's
+  questions, concluded similarity cannot separate short or pronoun-heavy
+  questions from off-topic ones, turned the floor off by default, rewrote the
+  docs to say so plainly, and added "test with a short real document" to the
+  contributor guide.
+- It also routed "main focus / purpose of this resume" questions as
+  whole-document questions, made the starter questions appear once, and found
+  that the "dead" footer heart and pop-in landing page came from the OS
+  reduced-motion setting rather than a missing animation, then verified the
+  result in a headless browser under both motion settings. 153 tests pass.
