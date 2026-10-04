@@ -1,0 +1,29 @@
+name: Uptime
+
+# Pings the live site every 15 minutes. A failing run makes GitHub email the
+# repository owner, which is the project's uptime alert (no external service).
+# Scheduled workflows can be delayed a few minutes, and GitHub pauses them after
+# 60 days without repository activity (re-enable under the Actions tab).
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Health endpoint answers
+        run: curl --fail --silent --show-error --max-time 20 --retry 3 --retry-delay 10 https://doculens.duckdns.org/api/health
+
+      - name: Status reports a version and at least one provider
+        run: |
+          body=$(curl --fail --silent --show-error --max-time 20 --retry 3 --retry-delay 10 https://doculens.duckdns.org/api/status)
+          echo "$body" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["version"] and d["providers"], d; print("version", d["version"])'
+
+      - name: Front page is served
+        run: curl --fail --silent --show-error --max-time 20 --retry 3 --retry-delay 10 https://doculens.duckdns.org/ | grep -q "DocuLens"

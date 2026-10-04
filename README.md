@@ -134,6 +134,7 @@ history: [`DECISIONS.md`](DECISIONS.md).
   only the question and retrieved passages are sent to the AI provider; the
   page loads nothing from other sites.
 - **CI:** CodeQL and `pip-audit` on every push; Dependabot updates.
+- **Uptime:** a scheduled GitHub Actions workflow (`uptime.yml`) checks the live health, status and front page every 15 minutes; a failure emails the repository owner.
 
 Report vulnerabilities as described in [`SECURITY.md`](SECURITY.md).
 
