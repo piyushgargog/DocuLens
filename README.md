@@ -23,135 +23,83 @@ that isn't actually in the source (hallucination). This project combines
 retrieval (find the relevant passages) with generation (answer from only
 those passages) so answers stay traceable back to the source text.
 
-## What's new in v3.6.2
-
-- **Motion under "reduce motion" restored to the original quick timing.** v3.6.1
-  gave reduced-motion users slow opacity fades and a fading (not beating) heart,
-  which felt sluggish. The landing page's settle-in (0.55 s, 40-420 ms stagger) and
-  the footer heartbeat now behave exactly as for everyone else.
-
-## What's new in v3.6.1
-
-- **Starter questions appear once.** "Try asking" used to show three generic
-  questions, remove them half a second later and show the model's tailored ones,
-  so the panel seemed to flash twice. Quiet placeholders now hold the spot and
-  the tailored questions replace them in place (the generic ones are only a
-  fallback if the tailored ones can't be fetched).
-- **The page arrives gently and the footer heart beats again, also with
-  "reduce motion" on.** Windows' *Show animations: off* turns on the browser's
-  reduced-motion setting, which flattened every entrance to an instant pop and
-  stopped the heart. The opening page's quick settle-in and the footer heartbeat
-  now keep running under that setting too (v3.6.2 restored the original fast
-  timing after a first attempt with slower fades felt wrong); all other motion
-  stays reduced. The normal heartbeat (removed in v3.3.0) is back for everyone.
-- **Fix: the suggested "main focus" question was refused.** A question the app
-  itself suggested ("What is the main focus of the resume?") answered "not in the
-  document". The v3.6.0 abstention floor was refusing it (its similarity score,
-  0.21, was below 0.25); on a real one-page resume answerable questions scored
-  0.06-0.27, no different from an off-topic one (0.05). **The floor is now off by
-  default** (see "Score-floor calibration"), and "main focus / purpose / subject
-  of this document / resume / thesis..." is routed as a whole-document question.
-
-## What's new in v3.6.0 — production hardening
-
-- **Correct rate limiting behind a proxy.** `X-Real-IP` is trusted only from
-  networks listed in `TRUSTED_PROXIES` (CIDR; loopback by default). Behind
-  Docker's bridge the proxy used to look like an untrusted peer, so every
-  visitor shared one rate-limit bucket; now it is configurable and still
-  can't be spoofed by a direct client.
-- **Optional abstention floor.** `RETRIEVAL_SCORE_FLOOR` can withhold passages
-  (and force the exact refusal) when even the best hit is too dissimilar to the
-  question. Shipped on at 0.25 in v3.6.0 and **switched off by default in v3.6.1**:
-  it refused real questions on short documents (see "Score-floor calibration").
-  [`score_floor_eval.py`](score_floor_eval.py) measures it. "Summarize section 4"
-  is now treated as a specific-section question, not a whole-document overview.
-- **Sturdier prompt-injection defence.** The prompt's `<<<BEGIN/END
-  PASSAGES>>>` fence tokens are neutralised if they appear inside uploaded text
-  or a filename; earlier chat turns are labelled as untrusted references; the
-  summary and suggestion prompts carry the same "excerpts are data, not
-  instructions" reminder as questions.
-- **Safer concurrency and memory.** Per-session `RLock`; a server-wide
-  `MAX_TOTAL_CHUNKS` budget (75,000) checked before embedding, answering 503 when
-  full; the session cookie's 2-hour expiry now slides forward while you are active
-  (the session id never changes).
-- **Provider resilience.** A connection that drops mid-stream is now treated as
-  a provider failure (so failover and cooldown apply), and a failed first
-  piece closes the generator cleanly.
-- **Optional `PREFETCH_MODEL=1`** loads the embedding model at startup, moving
-  ~2 s off the first upload.
-
-## What's new in v2
-
-- **Answers stream in** as the model writes them (server-sent events), with
-  a **Stop** button (or `Esc`); a stopped answer is kept on screen but not
-  used as context for follow-ups.
-- **Hybrid retrieval in production** — BM25 keyword scoring fused with
-  embedding similarity (reciprocal rank fusion), the retriever that
-  measured best in [`retrieval_eval.py`](#retrieval-evaluation-measured):
-  Hit@4 0.77 → **0.82**, MRR 0.56 → **0.70** on the labelled set. With it,
-  small-chunk answer quality recovered from 1 of 5 to 4 of 5 in the
-  answer-level comparison.
-- **A new composer**: attach, auto-growing question box, send ⇄ stop,
-  keyboard hints, and a line saying which documents will be searched.
-- **Choose what to search**: tick or untick documents in the list.
-- **Copy** any answer with its sources; **export** the whole conversation
-  as Markdown; **drop a PDF anywhere**; `/` jumps to the question box.
-- **Load control**: at most 4 LLM calls and 2 ingestions run at once;
-  anything beyond waits briefly, then gets a clear "busy" reply.
-- **Tighter security**: cross-site request blocking (Origin /
-  `Sec-Fetch-Site`), a `__Host-` session cookie over HTTPS, a 16KB cap on
-  JSON bodies, `Cross-Origin-Resource-Policy`, and a dependency
-  vulnerability audit (`pip-audit`) in CI that blocks merging.
-
 ## Key features
 
-- Upload any document and ask questions about it — no document-specific setup.
-- **Multiple documents**: add up to 5 documents and ask across all of them;
-  every source says which document and page it came from.
-- **Follow-up questions**: the last few turns are sent with each question,
-  so "how many moons does it have?" resolves "it" from the previous
-  question. Answers still come only from retrieved passages.
-- **Document summary**: one click per document for a short, page-cited
-  summary.
-- A page reload keeps your documents and conversation.
-- **Sources beside every answer**: on a wide screen every answer shows its
-  source passages as cards beside it; page references in the answer
-  become clickable `p. 3` chips, and clicking one lights up the exact
-  passage it points to. On a phone the cards fold under the answer.
-- A clean, modern interface (v2.1.0): documents sidebar card, chat-style
-  conversation with a floating composer, light and dark themes, a
-  keyboard-accessible, mobile-responsive layout, restrained motion that
-  responds to what you do (mostly switched off under reduced-motion
-  settings, except the quick page settle-in and the footer heartbeat), and a full footer with the author credit, repository and
-  release links, a privacy dialog and the running version — no frontend framework, no
-  build step, just static HTML/CSS/JS served by the backend. The design
-  rationale is in [`DESIGN.md`](DESIGN.md).
-- Page-aware text extraction, so every retrieved passage keeps its
-  source page number.
-- Answers are grounded: the LLM is instructed to answer only from
-  retrieved passages, and to say so explicitly when they don't contain
-  the answer.
-- Retrieved document text is treated as untrusted data: it is fenced in
-  the prompt and the model is instructed never to follow instructions
-  embedded in a document (see [Security](#security-notes) below).
-- **Reads PDF, Word, text and Markdown** (v2.5.0): documents of any of
-  these types are accepted; non-PDF files are split into even pages so
-  citations stay meaningful.
-- **Rich, readable answers** (v3.2.0): responses render as proper Markdown — headings, bold, bullet/numbered lists, tables, code — with page citations as inline chips, built safely (no innerHTML), for a Claude/ChatGPT-grade reading experience.
-- **"Calm Light" design** (v3.4.0–v3.5.0): a quiet, Claude-style interface — ink on warm near-white, one terracotta accent, Newsreader serif over Inter, light and dark themes — with a reading-screen progress bar, "Try asking" starters that fill in once the model has written them (v3.6.1) and an example cited answer on the landing page (`DESIGN.md`).
-- **Shows the model's thinking** (v2.3.0): when the model exposes its
-  reasoning, it streams into a collapsible "Thinking…" panel that folds to
-  "Thought for Ns", like ChatGPT. Reasoning is display-only: never saved to
-  the conversation history or fed back to the model.
-- **Reads scanned PDFs** (v2.3.0): image-only pages are OCR'd with Tesseract.
-- **Several AI providers with automatic failover** (v2.2.0): Groq and
-  Hugging Face (`gpt-oss-120b`), OpenRouter (Nemotron 3 Super 120B, free
-  tier) and NVIDIA (`gpt-oss-20b`); Google AI Studio (Gemini) is supported
-  as an opt-in. If one is rate limited, out of quota, down or
-  misconfigured, the question goes to the next, and the failing one is
-  skipped for a cooldown. Each answer shows which provider and model
-  wrote it, and the footer shows which providers are available right now.
-  Any other OpenAI-compatible endpoint can be plugged in too.
+**Ask and verify**
+- Upload any document and ask questions about it, with no document-specific
+  setup. **PDF, Word (.docx), text and Markdown** are accepted; non-PDF files
+  are split into even pages so citations stay meaningful, and **scanned PDFs are
+  OCR'd** (Tesseract).
+- **Multiple documents**: add up to 5 and ask across all of them, or tick the
+  ones to search. Every source says which document and page it came from.
+- **Sources beside every answer**: on a wide screen each answer shows its source
+  passages as cards; page references become clickable `p. 3` chips that light
+  up the exact passage. On a phone the cards fold under the answer.
+- **Follow-up questions**: the last few turns are sent with each question, so
+  "how many moons does it have?" resolves "it". Answers still come only from
+  retrieved passages.
+- **Document summary** (one click, page-cited) and **tailored "Try asking"
+  starters** written from the document.
+- **Answers stream in** as they are written, with a **Stop** button (or `Esc`);
+  a stopped answer is kept on screen but not used as context. A page reload
+  keeps your documents and conversation. **Copy** any answer with its sources,
+  **export** the conversation as Markdown, drop a file anywhere, `/` jumps to
+  the question box.
+- **Rich, readable answers**: proper Markdown (headings, lists, tables, code)
+  with inline citation chips, built safely with no `innerHTML`.
+- **Shows the model's thinking**: when a model exposes its reasoning it streams
+  into a collapsible "Thinking…" panel that folds to "Thought for Ns". It is
+  display-only: never saved to the history or fed back to the model.
+
+**Grounded, not guessed**
+- The LLM is told to answer only from the retrieved passages and to say so
+  explicitly when they don't contain the answer (one exact refusal sentence).
+- **Hybrid retrieval**: BM25 keyword scoring fused with embedding similarity
+  (reciprocal rank fusion), the retriever that measured best in
+  [`retrieval_eval.py`](#retrieval-evaluation-measured): Hit@4 0.77 → **0.82**,
+  MRR 0.56 → **0.70**. Whole-document questions ("summarize this", "what is the
+  main focus of this resume?") use an ordered sample instead of similarity
+  search.
+- Retrieved document text is **treated as untrusted data**: fenced in the prompt
+  (fence tokens in uploaded text and filenames are neutralised), earlier chat
+  turns are labelled untrusted, and the model is told never to follow
+  instructions embedded in a document (see [Security](#security-notes)).
+- An optional similarity floor (`RETRIEVAL_SCORE_FLOOR`, **off by default**) can
+  withhold weak passages; see [Score-floor calibration](#score-floor-calibration-v360-revised-in-v361)
+  for why it is opt-in.
+
+**Reliable and safe to run**
+- **Several AI providers with automatic failover**: Groq and Hugging Face
+  (`gpt-oss-120b`), OpenRouter (Nemotron 3 Super 120B, free tier) and NVIDIA
+  (`gpt-oss-20b`); Google AI Studio (Gemini) is opt-in. If one is rate limited,
+  out of quota, down or misconfigured (including a connection that drops
+  mid-stream), the question goes to the next and the failing one cools down.
+  Each answer shows which provider and model wrote it; the footer shows which
+  are available now. Any OpenAI-compatible endpoint can be plugged in.
+- **Load control and limits**: at most 4 LLM calls and 2 ingestions at once
+  (extra requests wait briefly, then get a clear "busy" reply), per-IP rate
+  limits that are correct behind a reverse proxy (`TRUSTED_PROXIES`), and a
+  server-wide index budget (`MAX_TOTAL_CHUNKS`).
+- **Security**: strict CSP and security headers, cross-site request blocking
+  (Origin / `Sec-Fetch-Site`), a `__Host-` session cookie over HTTPS with a
+  sliding 2-hour expiry, a 16KB JSON cap, `pip-audit` and CodeQL in CI. Uploads
+  are never written to disk.
+
+**Interface**
+- A quiet, Claude-style **"Calm Light" design**: ink on warm near-white, one
+  terracotta accent, Newsreader serif over Inter, light and dark themes,
+  keyboard-accessible and mobile-responsive. Motion is restrained and responds
+  to what you do (almost all of it switches off under reduced-motion settings;
+  the quick page settle-in and the footer heartbeat deliberately stay). A
+  full footer carries the author credit, repository and release links, a
+  privacy dialog and the running version. No frontend framework and no build
+  step: static HTML/CSS/JS served by the backend. Rationale in
+  [`DESIGN.md`](DESIGN.md).
+
+**Release history** is on the [GitHub Releases](https://github.com/piyushgargog/DocuLens/releases)
+page, and every engineering decision, failure and fix (including mistakes, like
+the v3.6.0 similarity floor) is logged chronologically in
+[`DECISIONS.md`](DECISIONS.md).
 
 ## Architecture
 
