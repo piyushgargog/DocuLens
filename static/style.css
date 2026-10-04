@@ -1882,8 +1882,9 @@ body.drop-target .sheet-chat::after {
   animation: fade 0.15s ease-out both;
 }
 
-/* Starter questions: generic ones appear instantly, then the model's tailored
-   ones cross-fade in (see showSuggestions). */
+/* Starter questions: three quiet placeholders hold the spot while the model
+   writes tailored ones, which then replace them in place -- one appearance,
+   never a list that vanishes and comes back (see showSuggestions). */
 .suggestions {
   display: flex;
   flex-direction: column;
@@ -1896,11 +1897,18 @@ body.drop-target .sheet-chat::after {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 8px;
-  transition: opacity 0.16s ease;
 }
 
-.suggestion-list.swapping {
-  opacity: 0;
+.suggestion-skeleton {
+  height: 42px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%) 0 0 / 200% 100%;
+  animation: shimmer-pill 1.4s linear infinite;
+}
+
+@keyframes shimmer-pill {
+  to { background-position: -200% 0; }
 }
 
 .suggestions-label {
@@ -2177,6 +2185,13 @@ body[data-view="chat"] .site-footer {
 .heart {
   display: inline-block;
   color: var(--heart);
+  transform-origin: center;
+  animation: beat 2.4s ease-in-out infinite;
+}
+
+@keyframes heart-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 @keyframes beat {
@@ -2498,6 +2513,28 @@ body[data-view="chat"] .site-footer {
     animation-iteration-count: 1 !important;
     animation-delay: 0s !important;
     transition: none !important;
+  }
+
+  /* "Reduce" is not "remove": large movement is gone, but the page still
+     arrives as a gentle opacity fade in reading order, and the footer heart
+     still gives a slow, soft pulse (opacity only, no scaling). Without this
+     a machine with Windows animations switched off sees everything pop in
+     at once and a dead heart. */
+  #upload-view > * {
+    animation: fade 0.7s ease-out both !important;
+  }
+  #upload-view > .eyebrow-badge { animation-delay: 60ms !important; }
+  #upload-view > .intro-title { animation-delay: 180ms !important; }
+  #upload-view > .intro-body { animation-delay: 300ms !important; }
+  #upload-view > .dropzone { animation-delay: 420ms !important; }
+  #upload-view > .features { animation-delay: 540ms !important; }
+  #upload-view > .privacy-note { animation-delay: 640ms !important; }
+
+  .heart {
+    animation: heart-glow 2.8s ease-in-out infinite !important;
+  }
+  .suggestion-skeleton {
+    animation: shimmer-pill 1.8s linear infinite !important;
   }
 
   /* A spinner means "working" -- keep it turning (just slower) even when

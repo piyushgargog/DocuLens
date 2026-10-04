@@ -1,6 +1,6 @@
 # Architecture — DocuLens
 
-_Current as of v3.6.0._
+_Current as of v3.6.1._
 
 ## Overview
 
@@ -161,19 +161,18 @@ document and one query this is exactly the "Hybrid" retriever measured in
 alone); a test pins that equivalence, and `retrieval_eval.py` imports the
 same functions.
 
-**Abstention floor (v3.6.0).** For non-overview questions `gather_sources()`
-compares the best displayed cosine score of the top-k hits with
-`RETRIEVAL_SCORE_FLOOR` (0.25). If even the best hit is below it, no passages
-are passed on — the prompt contains "(no passages retrieved)" and the model
-returns its exact refusal — instead of letting it improvise from noise. The
-value comes from `score_floor_eval.py` (`reports/score_floor_eval.md`):
-off-topic and cross-document questions top out at 0.28 (median ≈ 0.1) while
-answerable ones have a median of 0.5–0.65; 0.25 wrongly refuses ~3% of
-answerable questions (0.30 would refuse 8%). It is a safety net layered on the
-prompt's refusal rule, not a replacement (a follow-up is also searched as
-"previous question + question", so an off-topic follow-up that reuses the
-previous turn's words can clear the floor and rely on the refusal rule alone), and should be re-measured on new
-document sets. Overview questions bypass it (they use an ordered sample, not
+**Optional abstention floor (v3.6.0; off by default since v3.6.1).** When
+`RETRIEVAL_SCORE_FLOOR` is above 0, `gather_sources()` compares the best
+displayed cosine score of the top-k hits of a non-overview question with it; if
+even the best is below, no passages are passed on (the prompt contains
+"(no passages retrieved)") and the model returns its exact refusal. It shipped on
+at 0.25 after `score_floor_eval.py` looked safe on two sample documents, then
+refused real questions on a one-page resume (answerable questions scored
+0.06-0.27, an unrelated one 0.05): short documents and generic or pronoun-heavy
+questions have low cosine similarity to their own answers, so similarity alone
+cannot separate them from off-topic questions. The prompt's refusal rule remains
+the hallucination control; the floor stays as an opt-in knob, and
+`reports/score_floor_eval.md` documents the measurement and its limits. Overview questions bypass it (they use an ordered sample, not
 similarity); "summarize section 4" is recognised as a specific-part question
 (`_SECTION_QUALIFIER`) and goes through retrieval and the floor.
 
@@ -299,7 +298,7 @@ Two scripts sit beside the app and call the pipeline modules directly:
 | Vulnerable dependencies | Dependabot updates; `pip-audit` in CI fails the build on any known advisory |
 | Cross-session access (IDOR) | Document ids are looked up only inside the caller's own session (256-bit cookie) |
 | Prompt injection via PDF text or filenames | Passages fenced and declared untrusted; fence tokens inside source text and names are neutralized before prompting |
-| Weak retrieval / hallucination risk | Non-overview hits below `RETRIEVAL_SCORE_FLOOR` (0.25 default) are withheld from the LLM; overview routing is limited to whole-document questions |
+| Weak retrieval / hallucination risk | The grounding prompt's exact-refusal rule; optional `RETRIEVAL_SCORE_FLOOR` (off by default) withholds weak passages; overview routing covers whole-document questions ("main focus of this resume" included) |
 | Third-party data flow | Page loads nothing external; only the question + retrieved passages go to the LLM provider, disclosed on the upload screen |
 
 ## Failure Handling
@@ -316,7 +315,7 @@ Two scripts sit beside the app and call the pipeline modules directly:
 | Proxy returns an HTML error page | `app.js` `api()` | readable error, never a frozen screen |
 | Stale cached frontend after a deploy | `Cache-Control: no-cache` + `?v=` asset URLs | always the current script |
 | Question not answerable from the document | system prompt | the exact refusal string |
-| Best passage below the similarity floor | `pipeline.gather_sources()` | no passages sent; the exact refusal string |
+| Best passage below the (opt-in) similarity floor | `pipeline.gather_sources()` | no passages sent; the exact refusal string |
 | Server-wide chunk budget exhausted | `main.py` `ingest()` (`MAX_TOTAL_CHUNKS`) | 503 "document memory is full" |
 | Connection drops mid-stream | `llm_client._stream_deltas` → `LLMRequestError` | provider cooldown/failover before the first token; an `error` event after |
 | Instructions embedded in a PDF | fenced passages + untrusted-content rule | reported as document text, not obeyed |

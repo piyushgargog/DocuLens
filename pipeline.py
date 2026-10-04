@@ -22,20 +22,22 @@ SUMMARY_SAMPLE_CHUNKS = 10  # evenly spaced chunks fed to the summary prompt
 OVERVIEW_CHUNKS = 8  # passages given to the LLM for a whole-document question
 OVERVIEW_LEAD_CHUNKS = 2  # always include the opening (abstract/introduction)
 
-# Minimum cosine similarity for the best retrieved passage. When even the best
-# of the top-k hits is below it, a non-overview question gets no passages and
-# the model answers with its grounded refusal instead of improvising from noise.
-# Calibrated with score_floor_eval.py (reports/score_floor_eval.md): off-topic
-# and cross-document questions top out at 0.28 (median ~0.1), answerable ones
-# have a median of 0.5-0.65. 0.25 refuses ~all off-topic questions while
-# wrongly refusing only ~3% of answerable ones; 0.30 would refuse 8%. It is a
-# safety net, not the main control (the prompt's refusal rule is). Re-measure
-# on a new document set; adjust via the RETRIEVAL_SCORE_FLOOR env var.
+# Optional abstention floor (OFF by default): when set above 0, a non-overview
+# question whose best retrieved passage scores below it gets no passages and the
+# model returns its exact refusal. It shipped on in v3.6.0 at 0.25 and was
+# switched off in v3.6.1: calibrated on two sample documents it looked safe
+# (off-topic questions <= 0.28, answerable ones ~0.5-0.65), but on a real
+# one-page resume *answerable* questions scored 0.06-0.27 -- "where did he
+# work?" 0.06, "education?" 0.19, "main focus?" 0.21 -- no better than an
+# off-topic one (0.05), so it refused real questions. Cosine similarity cannot
+# separate "short, generic or pronoun-heavy" from "unrelated", so the grounding
+# prompt's exact-refusal rule stays the control. Kept as an opt-in knob
+# (RETRIEVAL_SCORE_FLOOR=0.15, say) with score_floor_eval.py to measure it.
 try:
-    RETRIEVAL_SCORE_FLOOR = float(os.environ.get("RETRIEVAL_SCORE_FLOOR", "0.25"))
+    RETRIEVAL_SCORE_FLOOR = float(os.environ.get("RETRIEVAL_SCORE_FLOOR", "0"))
 except ValueError:
-    RETRIEVAL_SCORE_FLOOR = 0.25
-RETRIEVAL_SCORE_FLOOR = max(-1.0, min(1.0, RETRIEVAL_SCORE_FLOOR))
+    RETRIEVAL_SCORE_FLOOR = 0.0
+RETRIEVAL_SCORE_FLOOR = max(0.0, min(1.0, RETRIEVAL_SCORE_FLOOR))
 
 # Questions about the document as a whole ("what is this about?", "main
 # contribution", "summarize the key findings"). Similarity search is the wrong
@@ -52,9 +54,10 @@ OVERVIEW_PATTERN = re.compile(
     r"\b(summari[sz](e|ing)"
     r"|summary(?= of| please|\s*\?|\s*$)|(give|write|need|want)( me)? (a |the )?(short |quick |brief )?summary"
     r"|overview|gist|tl;?dr|in a nutshell"
-    r"|(main|key|central|overall|primary|core|biggest) (idea|point|message|contribution|finding|takeaway|argument|goal|topic|theme)s?"
-    r"|what('?s| is| are)? (this|the) (document|paper|pdf|file|report|article|book|text)s? (about|for)"
-    r"|what does (this|the) (document|paper|pdf|file|report|article|book|text) (do|say|propose|cover))\b",
+    r"|(main|key|central|overall|primary|core|biggest) (idea|point|message|contribution|finding|takeaway|argument|goal|topic|theme|focus|purpose|objective|subject)s?"
+    r"|what('?s| is| are)? (this|the) (document|paper|pdf|file|report|article|book|text|resume|cv|thesis|essay|handbook|manual|presentation)s? (about|for)"
+    r"|(purpose|aim|objective|focus|subject|theme) of (this|the) (document|paper|pdf|file|report|article|book|text|resume|cv|thesis|essay|handbook|manual|presentation)"
+    r"|what does (this|the) (document|paper|pdf|file|report|article|book|text|resume|cv|thesis|essay|handbook|manual|presentation) (do|say|propose|cover))\b",
     re.IGNORECASE,
 )
 
@@ -193,7 +196,7 @@ def gather_sources(
     # Abstention: if every retrieved passage is below the score floor,
     # return no sources so the LLM sees "(no passages retrieved)" and
     # gives its grounded refusal instead of hallucinating from noise.
-    if sources and all(s["score"] < RETRIEVAL_SCORE_FLOOR for s in sources):
+    if RETRIEVAL_SCORE_FLOOR > 0 and sources and all(s["score"] < RETRIEVAL_SCORE_FLOOR for s in sources):
         return [], recent
     return sources, recent
 

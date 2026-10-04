@@ -144,7 +144,32 @@ def test_sectional_requests_are_not_overview(question):
 # --- Retrieval abstention gate --------------------------------------------
 
 
+def test_the_floor_is_off_by_default():
+    # v3.6.1: a 0.25 floor refused answerable questions on a real resume
+    # (cosine scores of 0.06-0.27), so abstention is opt-in.
+    assert pipeline.RETRIEVAL_SCORE_FLOOR == 0
+
+
+def test_low_scores_do_not_abstain_when_the_floor_is_off(sample_pdf_bytes, monkeypatch):
+    state = pipeline.ingest(sample_pdf_bytes)
+    monkeypatch.setattr(pipeline, "retrieve", lambda q, s, top_k=4: [{"page": 1, "text": "t", "score": 0.02}])
+    sources, _ = pipeline.gather_sources("Where did he work?", state)
+    assert len(sources) == 1  # passed to the model, which decides
+
+
+@pytest.mark.parametrize("question", [
+    "What is the main focus of Piyush Garg's Resume?",
+    "What is the main focus of the resume?",
+    "What is this resume about?",
+    "What is the purpose of this document?",
+    "What does the thesis say?",
+])
+def test_whole_document_phrasings_use_the_overview_path(question):
+    assert pipeline.is_overview_question(question)
+
+
 def test_low_score_passages_trigger_abstention(sample_pdf_bytes, monkeypatch):
+    monkeypatch.setattr(pipeline, "RETRIEVAL_SCORE_FLOOR", 0.25)  # opt-in
     state = pipeline.ingest(sample_pdf_bytes)
     # Force all scores below the floor
     def low_retrieve(queries, states, top_k=4):
@@ -156,6 +181,7 @@ def test_low_score_passages_trigger_abstention(sample_pdf_bytes, monkeypatch):
 
 
 def test_above_floor_passages_are_returned(sample_pdf_bytes, monkeypatch):
+    monkeypatch.setattr(pipeline, "RETRIEVAL_SCORE_FLOOR", 0.25)
     state = pipeline.ingest(sample_pdf_bytes)
     def ok_retrieve(queries, states, top_k=4):
         return [{"page": 1, "text": "relevant", "score": 0.5}]
@@ -165,6 +191,7 @@ def test_above_floor_passages_are_returned(sample_pdf_bytes, monkeypatch):
 
 
 def test_overview_questions_bypass_abstention_gate(sample_pdf_bytes, monkeypatch):
+    monkeypatch.setattr(pipeline, "RETRIEVAL_SCORE_FLOOR", 0.25)
     state = pipeline.ingest(sample_pdf_bytes)
     # Overview should never go through retrieve at all
     def no_retrieval(*a, **k):

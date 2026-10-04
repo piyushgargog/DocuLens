@@ -48,9 +48,16 @@ links are underlined ink. The conversation keeps a subtle neutral question
 bubble and a small monochrome "AI" mark; answers render as clean Markdown with
 terracotta page-citation chips that open the exact source beside them.
 
-**Motion.** Subtle and functional — things ease into place, nothing springs or
-loops. The one exception is the loading spinner, which keeps turning even under
-`prefers-reduced-motion` so it never reads as broken.
+**Motion.** Subtle and functional: things ease into place. The opening page
+arrives in reading order with a soft stagger, and the footer heart gives a slow
+heartbeat. `prefers-reduced-motion` means *less movement*, not none: all
+travel and scaling are removed, but the page still fades in in the same order
+and the heart still pulses softly (opacity only), because on Windows with
+"Show animations" off the browser reports reduced motion, and a page that
+pops in all at once with a dead heart reads as broken. The loading spinner
+always keeps turning. Lists that load asynchronously (the "Try asking"
+starters) hold their place with quiet placeholders and fill in once; nothing
+appears, vanishes and reappears.
 
 **Is not:** a loud SaaS UI, a neon-on-black theme, a gradient landing page, or
 a dense broadsheet. The single bold move is the light serif headline on warm
