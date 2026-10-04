@@ -49,15 +49,16 @@ bubble and a small monochrome "AI" mark; answers render as clean Markdown with
 terracotta page-citation chips that open the exact source beside them.
 
 **Motion.** Subtle and functional: things ease into place. The opening page
-arrives in reading order with a soft stagger, and the footer heart gives a slow
-heartbeat. `prefers-reduced-motion` means *less movement*, not none: all
-travel and scaling are removed, but the page still fades in in the same order
-and the heart still pulses softly (opacity only), because on Windows with
-"Show animations" off the browser reports reduced motion, and a page that
-pops in all at once with a dead heart reads as broken. The loading spinner
-always keeps turning. Lists that load asynchronously (the "Try asking"
-starters) hold their place with quiet placeholders and fill in once; nothing
-appears, vanishes and reappears.
+arrives in reading order with a quick soft stagger (0.55 s settle, 40-420 ms
+delays), and the footer heart gives a small heartbeat. Under
+`prefers-reduced-motion` almost everything is switched off, with two deliberate
+exceptions that keep their normal timing: that page settle-in and the heartbeat.
+Reason: on Windows with "Show animations" off the browser reports reduced motion,
+and a page that pops in all at once with a dead heart read as broken to the
+owner; a first attempt with slower opacity-only fades read as sluggish, so the
+original quick motion is kept. The loading spinner always keeps turning. Lists
+that load asynchronously (the "Try asking" starters) hold their place with quiet
+placeholders and fill in once; nothing appears, vanishes and reappears.
 
 **Is not:** a loud SaaS UI, a neon-on-black theme, a gradient landing page, or
 a dense broadsheet. The single bold move is the light serif headline on warm

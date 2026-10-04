@@ -121,6 +121,8 @@ Added later, each with its reasoning in `DECISIONS.md`:
   retrieval in production, per-question document scope, copy/export,
   new composer, concurrency limits, CSRF guard, `__Host-` cookie,
   `pip-audit` in CI.
+- v3.6.2: the landing settle-in and footer heartbeat keep their original quick
+  timing under "reduce motion" (v3.6.1's slower fades felt wrong).
 - v3.6.1: fixes after the first real-document test: suggested questions
   appear once (placeholders, no flash), the landing fade and footer heart work
   with "reduce motion" on, and the v3.6.0 similarity floor is off by default

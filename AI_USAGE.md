@@ -476,3 +476,11 @@ understood and explainable without AI help (the task requires it):
   that the "dead" footer heart and pop-in landing page came from the OS
   reduced-motion setting rather than a missing animation, then verified the
   result in a headless browser under both motion settings. 153 tests pass.
+
+## Version 3.6.2
+
+- The user said the v3.6.1 motion fix felt slow and the heart faded instead of
+  beating. The assistant had chosen softer, slower fades as a "safe" reading of the
+  reduced-motion setting without asking; it reverted to the original quick timing
+  for the page settle-in and the heartbeat (keeping everything else reduced) and
+  re-verified in a headless browser.
