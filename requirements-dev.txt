@@ -3,3 +3,4 @@ pytest>=9.1.1
 httpx>=0.28.1
 # Browser end-to-end tests (opt-in: DOCULENS_E2E=1 pytest tests/e2e)
 playwright>=1.50
+fakeredis[lua]>=2.26.0
