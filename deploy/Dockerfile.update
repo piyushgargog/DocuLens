@@ -13,12 +13,16 @@ FROM doculens:prod
 WORKDIR /app
 # OCR engine for scanned PDFs (see pdf_loader.py); English data only.
 RUN apt-get update \
+    && apt-get -y upgrade \
     && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir --upgrade pip "setuptools>=83"
+# The full image ships without pip (see ../Dockerfile); bring a current one back for this build.
+RUN python -m ensurepip --upgrade && pip install --no-cache-dir --upgrade pip "setuptools>=83"
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
+# Build tools out of the runtime image again (see ../Dockerfile for why).
+RUN pip uninstall -y pip setuptools wheel
 # Old font files from earlier releases live on in the base image; drop them.
 RUN rm -f static/fonts/atkinson-hyperlegible-*.woff2 static/fonts/source-serif-4-variable.woff2
 

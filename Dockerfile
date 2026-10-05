@@ -9,7 +9,10 @@ WORKDIR /app
 # tesseract is the OCR engine used for scanned / image-only PDFs (pytesseract
 # is just a wrapper). --no-install-recommends + the English data only keeps
 # this to ~a few tens of MB; the apt lists are removed in the same layer.
+# `apt-get upgrade` first: the base image lags Debian's security updates (Trivy found
+# a HIGH libpcre2 CVE with a fix already published).
 RUN apt-get update \
+    && apt-get -y upgrade \
     && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
@@ -30,6 +33,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+# pip, setuptools and wheel are build tools. They bundle their own copies of urllib3,
+# msgpack and setuptools that trail upstream and that Trivy reports as HIGH, yet
+# nothing here imports them at runtime, so they are removed from the final image.
+# (deploy/Dockerfile.update restores pip with `ensurepip` when it needs it.)
+RUN pip uninstall -y pip setuptools wheel
 
 # Run as an unprivileged user, not root: defence in depth, so a hypothetical
 # code-execution bug in a dependency isn't already root inside the container.
