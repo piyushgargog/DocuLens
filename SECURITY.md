@@ -55,3 +55,12 @@ providers' models and infrastructure; report those to the provider.
 
 This is a spare-time project with no SLA. Security reports are handled before
 features and general bugs.
+
+## v4 hardening pass
+
+An audit with static analysis, fuzzing, property-based tests and workflow/dependency/secret scanning is recorded in [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) (machine-readable: `security-results.json`, gated by `scripts/release_gate.py`). The threat model is in [`THREAT_MODEL.md`](THREAT_MODEL.md) and how to run the checks in [`SECURITY_TESTING.md`](SECURITY_TESTING.md).
+
+- **Secrets and rotation:** provider keys, `REDIS_URL` and `DOCULENS_STATE_KEY` live only in the server's `.env` (mode 600). To rotate: create the new credential, update the `.env`, restart the container, revoke the old one. A credential that was ever pasted into a chat, ticket or commit is treated as exposed and rotated.
+- **Incident response:** take the site down (`docker stop doculens-app`), rotate every credential above, review `docker logs` (request ids, no document content), restore from a known-good image tag, then write up what happened in `DECISIONS.md`.
+- **Hardened run:** `docker run --read-only --tmpfs /tmp --tmpfs /app/.cache --cap-drop ALL --security-opt no-new-privileges --memory 1500m --pids-limit 256 ...` (the CI boot test uses the same flags).
+- **Known limitations:** see the accepted risks in `SECURITY_AUDIT.md`. Nothing here is a guarantee that the application is free of vulnerabilities.

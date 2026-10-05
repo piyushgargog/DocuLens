@@ -1,0 +1,390 @@
+{
+  "generated": "2026-10-05T14:53:11+00:00",
+  "commit": "b988c97c07d91ffe2c4331d521d2f7143f93541f",
+  "audited_scope": "DocuLens v4 working tree on branch feat/v4 (see SECURITY_AUDIT.md)",
+  "required_scanners": [
+    "pytest",
+    "playwright-e2e",
+    "bandit",
+    "ruff",
+    "mypy",
+    "semgrep",
+    "pip-audit",
+    "osv-scanner",
+    "trivy-fs",
+    "gitleaks",
+    "actionlint",
+    "zizmor",
+    "hadolint",
+    "schemathesis",
+    "hypothesis",
+    "github-code-scanning",
+    "trivy-image",
+    "zap-baseline",
+    "sbom",
+    "scorecard"
+  ],
+  "blocked_with_ci_coverage": [
+    "trivy-image",
+    "zap-baseline",
+    "sbom",
+    "scorecard"
+  ],
+  "scanners": {
+    "pytest": {
+      "status": "PASS",
+      "detail": "718 passed (unit, security regression, property-based, API fuzzing)"
+    },
+    "playwright-e2e": {
+      "status": "PASS",
+      "detail": "10 passed"
+    },
+    "bandit": {
+      "status": "PASS",
+      "version": "1.9.4",
+      "detail": "0 issues after fixes (initial: 1 high B324, 3 low)"
+    },
+    "ruff": {
+      "status": "PASS",
+      "version": "0.16.10",
+      "detail": "rules E9,F,B,S"
+    },
+    "mypy": {
+      "status": "PASS",
+      "version": "2.4.0",
+      "detail": "19 modules, 0 errors (found F-11)"
+    },
+    "semgrep": {
+      "status": "PASS",
+      "version": "1.x",
+      "detail": "81 files; 8 findings: 6 fixed, 2 false positives (F-16); Dockerfile parser unsupported"
+    },
+    "pip-audit": {
+      "status": "PASS",
+      "detail": "no known vulnerabilities in the installed environment"
+    },
+    "osv-scanner": {
+      "status": "PASS",
+      "detail": "requirements.txt, requirements-dev.txt, tools/firebase lockfile: clean after F-13/F-14"
+    },
+    "trivy-fs": {
+      "status": "PASS",
+      "version": "0.75.0",
+      "detail": "0 HIGH/CRITICAL (vuln, secret, misconfig)"
+    },
+    "gitleaks": {
+      "status": "PASS",
+      "version": "8.30.1",
+      "detail": "history: 102 commits, 0 leaks; working tree: only the untracked, gitignored local .env and a third-party source map"
+    },
+    "actionlint": {
+      "status": "PASS",
+      "version": "1.7.12"
+    },
+    "zizmor": {
+      "status": "PASS",
+      "version": "1.30.1",
+      "detail": "after F-12 (offline mode)"
+    },
+    "hadolint": {
+      "status": "PASS",
+      "version": "2.x",
+      "detail": "Dockerfile, deploy/Dockerfile.update; ignored rules justified in .hadolint.yaml"
+    },
+    "schemathesis": {
+      "status": "PASS",
+      "version": "4.29.3",
+      "detail": "13/13 operations, 172 cases, 0 failures (sign-in configured)"
+    },
+    "hypothesis": {
+      "status": "PASS",
+      "version": "6.168.4",
+      "detail": "22 properties; found F-04 and the '..' filename case"
+    },
+    "github-code-scanning": {
+      "status": "PASS",
+      "detail": "CodeQL default setup; 0 open alerts, 0 Dependabot alerts, 0 secret-scanning alerts (gh api)"
+    },
+    "trivy-image": {
+      "status": "BLOCKED",
+      "detail": "Docker daemon not running on the audit machine; runs in container-security.yml"
+    },
+    "zap-baseline": {
+      "status": "BLOCKED",
+      "detail": "no Docker/ZAP locally; runs weekly in dynamic-security.yml"
+    },
+    "sbom": {
+      "status": "BLOCKED",
+      "detail": "Syft runs in container-security.yml"
+    },
+    "scorecard": {
+      "status": "BLOCKED",
+      "detail": "runs on GitHub in scorecard.yml"
+    },
+    "live-passive": {
+      "status": "PASS",
+      "detail": "production headers checked (CSP, HSTS, nosniff, frame, referrer, COOP/CORP); no active testing against production"
+    }
+  },
+  "findings": [
+    {
+      "id": "F-01",
+      "severity": "medium",
+      "title": "A .docx zip bomb (a few KB inflating to GBs) was parsed without limits",
+      "status": "fixed",
+      "scanner": "manual review / fuzzing",
+      "remediation": "document_loader.docx_is_safe checks entry count, per-part and total size and ratio from the zip directory before any parsing",
+      "regression_test": "tests/test_security_hardening.py::TestUploads::test_a_docx_zip_bomb_is_refused_before_it_is_decompressed",
+      "tags": [
+        "dos"
+      ]
+    },
+    {
+      "id": "F-02",
+      "severity": "medium",
+      "title": "JSON request bodies were buffered in full before the size cap was applied (chunked transfer, no Content-Length)",
+      "status": "fixed",
+      "scanner": "manual review / fuzzing",
+      "remediation": "main._json_body streams the body and stops at MAX_JSON_BYTES",
+      "regression_test": "tests/test_security_hardening.py::TestRequests::test_oversized_json_is_refused_without_buffering_it",
+      "tags": [
+        "dos"
+      ]
+    },
+    {
+      "id": "F-03",
+      "severity": "medium",
+      "title": "Parallel uploads could exceed the per-user / guest document cap (check-then-act race)",
+      "status": "fixed",
+      "scanner": "manual review / fuzzing",
+      "remediation": "the cap check, the save and the registration run under one per-session lock; mutation-tested (7 stored with the lock removed, cap 5)",
+      "regression_test": "tests/test_security_hardening.py::TestConcurrency::test_parallel_uploads_by_one_user_never_exceed_the_cap_or_corrupt_the_index",
+      "tags": [
+        "authorization",
+        "dos"
+      ]
+    },
+    {
+      "id": "F-04",
+      "severity": "medium",
+      "title": "Streaming parsers crashed on well-formed JSON events that are not objects (null, array, number)",
+      "status": "fixed",
+      "scanner": "hypothesis",
+      "remediation": "llm_adapters._json_object skips non-object events",
+      "regression_test": "tests/test_properties.py::test_valid_event_json_of_any_shape_never_crashes_the_stream",
+      "tags": [
+        "availability"
+      ]
+    },
+    {
+      "id": "F-05",
+      "severity": "medium",
+      "title": "A corrupt value in Redis raised through the state store and tripped the 30 s circuit breaker for everything",
+      "status": "fixed",
+      "scanner": "manual review / fuzzing",
+      "remediation": "RedisStore drops undecodable values/fields and reports them as absent; the breaker is for outages only",
+      "regression_test": "tests/test_security_hardening.py::TestStateStore::test_corrupt_values_are_dropped_without_tripping_the_circuit_breaker",
+      "tags": [
+        "availability"
+      ]
+    },
+    {
+      "id": "F-06",
+      "severity": "low",
+      "title": "Application shutdown raised if Redis was down",
+      "status": "fixed",
+      "scanner": "manual review / fuzzing",
+      "remediation": "ResilientStore.close swallows and logs the error",
+      "regression_test": "tests/test_security_hardening.py::TestStateStore::test_during_an_outage_a_signed_in_users_documents_are_hidden_not_exposed",
+      "tags": [
+        "availability"
+      ]
+    },
+    {
+      "id": "F-07",
+      "severity": "low",
+      "title": "Every token with an unknown key id made the server fetch Google's certificates (outbound amplification)",
+      "status": "fixed",
+      "scanner": "manual review / fuzzing",
+      "remediation": "refetch at most once per 60 s",
+      "regression_test": "tests/test_auth.py::test_unknown_key_id_is_rejected",
+      "tags": [
+        "dos",
+        "authentication"
+      ]
+    },
+    {
+      "id": "F-08",
+      "severity": "low",
+      "title": "Filenames could carry bidirectional-override / zero-width characters, backslash paths or a bare '..'",
+      "status": "fixed",
+      "scanner": "hypothesis",
+      "remediation": "main._clean_filename strips them",
+      "regression_test": "tests/test_properties.py::test_clean_filename_is_always_a_short_inert_basename",
+      "tags": [
+        "injection"
+      ]
+    },
+    {
+      "id": "F-09",
+      "severity": "medium",
+      "title": "Prompt-structure forgery: fence variants (case, spacing, full-width), fake '[Page N]' labels and bracket-closing filenames",
+      "status": "fixed",
+      "scanner": "manual review / fuzzing",
+      "remediation": "llm_client._neutralize defuses any run of 3+ angle brackets and [Page N] lookalikes in document text, history and filenames",
+      "regression_test": "tests/test_security_hardening.py::TestPromptInjectionStructure",
+      "tags": [
+        "injection",
+        "prompt-injection"
+      ]
+    },
+    {
+      "id": "F-10",
+      "severity": "medium",
+      "title": "A saved HNSW index was deserialised by FAISS with only a digest stored next to it",
+      "status": "fixed",
+      "scanner": "manual review / fuzzing",
+      "remediation": "index blobs are stored only with DOCULENS_STATE_KEY and verified with HMAC-SHA256; otherwise rebuilt from the embeddings",
+      "regression_test": "tests/test_vector_index.py::test_a_saved_index_signed_with_another_key_is_never_deserialised",
+      "tags": [
+        "deserialization"
+      ]
+    },
+    {
+      "id": "F-11",
+      "severity": "medium",
+      "title": "A document removed on another instance between the membership check and the load raised IndexError (500)",
+      "status": "fixed",
+      "scanner": "mypy + review",
+      "remediation": "main._one_document returns 404",
+      "regression_test": "tests/test_security_hardening.py::TestConcurrency::test_deleting_while_asking_never_crashes",
+      "tags": [
+        "availability"
+      ]
+    },
+    {
+      "id": "F-12",
+      "severity": "high",
+      "title": "GitHub Actions referenced by mutable tags; checkout persisted credentials (zizmor: 4 high, 2 low)",
+      "status": "fixed",
+      "scanner": "zizmor",
+      "remediation": "every action pinned to a full commit SHA, persist-credentials: false, minimal permissions",
+      "regression_test": "zizmor + actionlint in .github/workflows/security.yml",
+      "tags": [
+        "supply-chain"
+      ]
+    },
+    {
+      "id": "F-13",
+      "severity": "medium",
+      "title": "Dependency floors allowed versions with published advisories (pyjwt, anyio, idna, torch, transformers, pygments)",
+      "status": "fixed",
+      "scanner": "osv-scanner",
+      "remediation": "requirements minimums raised; pip-audit and OSV re-run clean",
+      "regression_test": "pip-audit step in tests.yml",
+      "tags": [
+        "supply-chain"
+      ]
+    },
+    {
+      "id": "F-14",
+      "severity": "low",
+      "title": "firebase meta-package pulled firestore/grpc (4 high npm advisories) although only auth is bundled",
+      "status": "fixed",
+      "scanner": "osv-scanner / npm audit",
+      "remediation": "tools/firebase now depends on @firebase/app and @firebase/auth only; npm audit: 0",
+      "regression_test": "npm audit (tools/firebase)",
+      "tags": [
+        "supply-chain"
+      ]
+    },
+    {
+      "id": "F-15",
+      "severity": "low",
+      "title": "SHA-1 used for an in-memory cache key (bandit B324 high); silent except-pass in pdf_loader (B110/B112)",
+      "status": "fixed",
+      "scanner": "bandit",
+      "remediation": "BLAKE2b; the exceptions are logged",
+      "regression_test": "bandit clean",
+      "tags": []
+    },
+    {
+      "id": "F-16",
+      "severity": "low",
+      "title": "Semgrep ssrf-injection-requests on llm_client._post (variable named 'request')",
+      "status": "false_positive",
+      "scanner": "semgrep",
+      "remediation": "the URL is built from operator configuration only; renamed and a host-equality check added as defence in depth",
+      "regression_test": "tests/test_security_hardening.py::TestOutboundRequests",
+      "tags": [
+        "ssrf"
+      ]
+    },
+    {
+      "id": "F-17",
+      "severity": "medium",
+      "title": "CSP must allow https://apis.google.com for Firebase's popup sign-in",
+      "status": "accepted",
+      "scanner": "manual review / fuzzing",
+      "remediation": "applies only when Firebase is configured; every DOM sink is textContent (tested), no inline script/eval, object-src and base-uri none",
+      "regression_test": "tests/test_security_hardening.py::TestFrontendSinks",
+      "tags": [
+        "xss"
+      ],
+      "acceptance": {
+        "rationale": "applies only when Firebase is configured; every DOM sink is textContent (tested), no inline script/eval, object-src and base-uri none",
+        "owner": "Piyush Garg",
+        "review_date": "2026-12-05",
+        "scope": "production deployment"
+      }
+    },
+    {
+      "id": "F-18",
+      "severity": "low",
+      "title": "A stolen Firebase ID token can be exchanged for a login for up to an hour (no jti to revoke)",
+      "status": "accepted",
+      "scanner": "manual review / fuzzing",
+      "remediation": "inherent to bearer tokens; /api/login is rate limited, our own session is separately revocable (logout)",
+      "regression_test": "tests/test_auth.py",
+      "tags": [
+        "token-lifetime"
+      ],
+      "acceptance": {
+        "rationale": "inherent to bearer tokens; /api/login is rate limited, our own session is separately revocable (logout)",
+        "owner": "Piyush Garg",
+        "review_date": "2026-12-05",
+        "scope": "production deployment"
+      }
+    },
+    {
+      "id": "F-19",
+      "severity": "medium",
+      "title": "A PDF 'flate bomb' can exhaust memory inside PyMuPDF text extraction, which cannot be bounded in-process",
+      "status": "accepted",
+      "scanner": "manual review / fuzzing",
+      "remediation": "container memory limit and restart policy (deploy command, container-security.yml); page and time limits; recommended: run behind --memory",
+      "regression_test": "tests/test_security_hardening.py::TestUploads::test_a_pdf_with_an_absurd_page_count_is_bounded",
+      "tags": [
+        "dos"
+      ],
+      "acceptance": {
+        "rationale": "container memory limit and restart policy (deploy command, container-security.yml); page and time limits; recommended: run behind --memory",
+        "owner": "Piyush Garg",
+        "review_date": "2026-12-05",
+        "scope": "production deployment"
+      }
+    }
+  ],
+  "secrets": {
+    "found": 0,
+    "note": "no secret in git history or tracked files; the local .env is untracked and gitignored"
+  },
+  "tests": {
+    "total": 728,
+    "failed": 0,
+    "unit": 718,
+    "e2e": 10
+  },
+  "dependency_vulnerabilities": 0,
+  "container_blockers": 0
+}
