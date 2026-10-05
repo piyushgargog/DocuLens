@@ -2,7 +2,7 @@
 
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -165,7 +165,7 @@ def retrieve(queries: list[str], states: list[IndexState], top_k: int = DEFAULT_
     query_vectors = embedder.embed(queries)
     term_indexes = [state.store.terms for state in states]
     rankings = []
-    for query, vector in zip(queries, query_vectors):
+    for query, vector in zip(queries, query_vectors, strict=True):
         rankings.append(ranking(bm25_scores(query, term_indexes)))
         rankings.append(ranking(_dense_similarity(states, vector)))
     order = reciprocal_rank_fusion(rankings)[:top_k]
@@ -177,7 +177,7 @@ def retrieve(queries: list[str], states: list[IndexState], top_k: int = DEFAULT_
         which = int(np.searchsorted(starts, i, side="right")) - 1
         rows.append(states[which].store.embeddings[i - starts[which]])
     exact = np.max(np.stack(rows) @ query_vectors.T, axis=1)
-    return [{**chunks[i], "score": float(s)} for i, s in zip(order, exact)]
+    return [{**chunks[i], "score": float(s)} for i, s in zip(order, exact, strict=True)]
 
 
 def _dense_similarity(states: list[IndexState], vector: np.ndarray) -> np.ndarray:
@@ -276,7 +276,7 @@ def answer_stream(
     index_state: IndexState | list[IndexState],
     top_k: int = DEFAULT_TOP_K,
     history: list[dict] | None = None,
-) -> tuple[list[dict], Iterator[tuple[str, str]]]:
+) -> tuple[list[dict], Generator[tuple[str, str], None, None]]:
     """Like answer(), but returns the sources at once and the answer as an
     iterator of (kind, text) pieces ("content"/"reasoning"), so the UI can show
     passages, the model's thinking, and the answer text as they come."""

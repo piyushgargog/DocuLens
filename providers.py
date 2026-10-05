@@ -43,6 +43,7 @@ import logging
 import re
 import threading
 import time
+from typing import Any
 from dataclasses import dataclass, field, replace
 from urllib.parse import urlsplit
 
@@ -54,7 +55,7 @@ import llm_adapters
 # prompt-injection tests the other providers pass.
 DEFAULT_ORDER = "groq,openrouter,nvidia,huggingface"
 
-KNOWN = {
+KNOWN: dict[str, dict[str, Any]] = {
     # Google AI Studio (Gemini API) through its OpenAI-compatible endpoint.
     "google": {
         "label": "Google AI Studio",
@@ -173,7 +174,7 @@ _AUTHS = ("", "bearer", "x-api-key", "api-key", "x-goog-api-key", "none")
 MAX_ROUTES_JSON = 20_000
 
 
-def _custom_specs() -> dict[str, dict]:
+def _custom_specs() -> dict[str, dict[str, Any]]:
     """Providers declared in LLM_ROUTES (JSON). Anything malformed is skipped
     with a warning that names the problem but never prints the value."""
     raw = _env("LLM_ROUTES")
@@ -190,7 +191,7 @@ def _custom_specs() -> dict[str, dict]:
     if not isinstance(entries, list):
         _log.warning("LLM_ROUTES ignored: expected a JSON list")
         return {}
-    specs: dict[str, dict] = {}
+    specs: dict[str, dict[str, Any]] = {}
     for position, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict):
             _log.warning("LLM_ROUTES entry #%d ignored: not an object", position)
@@ -243,7 +244,7 @@ def routes() -> list[Route]:
     """The configured chain, in order. Read from the environment on every
     call, so tests (and a restarted container) see changes immediately."""
     custom = _custom_specs()
-    known = {**KNOWN, **custom}
+    known: dict[str, dict[str, Any]] = {**KNOWN, **custom}
     order = [p.strip().lower() for p in (_env("LLM_PROVIDERS") or DEFAULT_ORDER).split(",") if p.strip()]
     order += [name for name in custom if name not in order]  # LLM_ROUTES entries join the end
     chain = []

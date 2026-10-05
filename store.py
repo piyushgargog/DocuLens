@@ -171,14 +171,27 @@ class RedisStore:
 
     async def get_json(self, key: str):
         raw = await self._redis.get(key)
-        return None if raw is None else json.loads(raw)
+        return await self._decode(key, raw)
+
+    async def _decode(self, key: str, raw):
+        """JSON from Redis. A value that is not valid JSON (corruption, or something
+        else wrote the key) is deleted and treated as absent: it is bad *data*, not
+        an outage, so it must not make the whole store look down."""
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            log.warning("Dropping a corrupt value in the state store")
+            await self._redis.delete(key)
+            return None
 
     async def set_json(self, key: str, value, ttl: int) -> None:
         await self._redis.set(key, json.dumps(value), ex=ttl)
 
     async def pop_json(self, key: str):
         raw = await self._redis.getdel(key)
-        return None if raw is None else json.loads(raw)
+        return await self._decode(key, raw)
 
     async def delete(self, key: str) -> None:
         await self._redis.delete(key)
@@ -187,7 +200,10 @@ class RedisStore:
         await self._redis.set(key, data, ex=ttl)
 
     async def get_bytes(self, key: str) -> bytes | None:
-        return await self._redis.get(key)
+        raw = await self._redis.get(key)
+        if raw is None:
+            return None
+        return raw if isinstance(raw, bytes) else str(raw).encode("utf-8")
 
     async def delete_bytes(self, keys: list[str]) -> None:
         if keys:
@@ -201,13 +217,21 @@ class RedisStore:
 
     async def hgetall_json(self, key: str) -> dict:
         raw = await self._redis.hgetall(key)
-        return {(f.decode() if isinstance(f, bytes) else f): json.loads(v) for f, v in raw.items()}
+        out = {}
+        for field, value in raw.items():
+            name = field.decode() if isinstance(field, bytes) else field
+            try:
+                out[name] = json.loads(value)
+            except ValueError:  # one corrupt field: drop it, keep the rest
+                log.warning("Dropping a corrupt hash field in the state store")
+                await self._redis.hdel(key, field)
+        return out
 
     async def hdel(self, key: str, field: str) -> None:
         await self._redis.hdel(key, field)
 
     async def rate_hit(self, key: str, limits: list[tuple[int, int]]) -> int:
-        args = [int(time.time() * 1000), secrets.token_hex(6)]
+        args: list[int | str] = [int(time.time() * 1000), secrets.token_hex(6)]
         for limit, window in limits:
             args += [limit, window * 1000]
         return int(await self._rate_script(keys=[key], args=args))
@@ -293,7 +317,10 @@ class ResilientStore:
         await self.fallback.sweep()
 
     async def close(self):
-        await self.primary.close()
+        try:
+            await self.primary.close()
+        except Exception as e:  # shutting down during an outage must still shut down
+            log.warning("Closing the Redis connection failed (%s)", type(e).__name__)
 
 
 def make_store() -> MemoryStore | ResilientStore:

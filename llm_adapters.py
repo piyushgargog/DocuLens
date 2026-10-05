@@ -58,6 +58,16 @@ def _sse_data(response) -> Iterator[tuple[str, str]]:
         raise LLMRequestError(f"Streaming read failed: {type(exc).__name__}") from exc
 
 
+def _json_object(data: str) -> dict | None:
+    """The event as a dict, or None for anything that is not a JSON object (a
+    stray number, array, null or malformed line must be skipped, not crash the stream)."""
+    try:
+        event = json.loads(data)
+    except ValueError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
 def _merge_same_role(turns: list[dict]) -> list[dict]:
     """APIs that need strictly alternating roles: join neighbours with the same role."""
     out: list[dict] = []
@@ -127,9 +137,8 @@ class OpenAIAdapter(Adapter):
                 continue
             if data == "[DONE]":
                 return
-            try:
-                event = json.loads(data)
-            except ValueError:
+            event = _json_object(data)
+            if event is None:
                 continue
             if "error" in event:
                 raise LLMRequestError("The LLM API reported an error while streaming.")
@@ -171,9 +180,8 @@ class AnthropicAdapter(Adapter):
 
     def stream(self, response):
         for _, data in _sse_data(response):
-            try:
-                event = json.loads(data)
-            except ValueError:
+            event = _json_object(data)
+            if event is None:
                 continue
             kind = event.get("type")
             if kind == "error":
@@ -217,9 +225,8 @@ class GeminiAdapter(Adapter):
 
     def stream(self, response):
         for _, data in _sse_data(response):
-            try:
-                event = json.loads(data)
-            except ValueError:
+            event = _json_object(data)
+            if event is None:
                 continue
             if "error" in event:
                 raise LLMRequestError("The LLM API reported an error while streaming.")
@@ -246,9 +253,8 @@ class CohereAdapter(Adapter):
 
     def stream(self, response):
         for event_name, data in _sse_data(response):
-            try:
-                event = json.loads(data)
-            except ValueError:
+            event = _json_object(data)
+            if event is None:
                 continue
             kind = event.get("type") or event_name
             if kind == "message-end":

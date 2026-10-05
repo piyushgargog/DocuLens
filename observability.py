@@ -34,10 +34,14 @@ def new_request_id() -> str:
     return secrets.token_hex(6)
 
 
+_logging_configured = False
+
+
 def setup_logging() -> None:
     """Configure the `doculens` logger once, with a request-id-aware format.
     Idempotent so imports/tests/reloads don't stack handlers."""
-    if getattr(setup_logging, "_done", False):
+    global _logging_configured
+    if _logging_configured:
         return
     level = os.environ.get("LOG_LEVEL", "INFO").upper()
     handler = logging.StreamHandler()
@@ -48,7 +52,7 @@ def setup_logging() -> None:
     log.setLevel(getattr(logging, level, logging.INFO))
     log.addHandler(handler)
     log.propagate = False
-    setup_logging._done = True
+    _logging_configured = True
 
 
 def init_sentry(release: str | None = None) -> bool:

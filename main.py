@@ -18,6 +18,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
@@ -426,7 +427,7 @@ async def _load_states(session: Session, doc_ids: list[str]) -> tuple[list[pipel
                     if getattr(_store, "degraded", False):
                         raise StorageUnavailable() from e  # not proof the document is gone
                     log.warning("Removing unrecoverable document (%s)", type(e).__name__)
-                    await _repo().delete(session.owner, doc_id)
+                    await _repo().delete(_owner_of(session), doc_id)
                     with session.lock:
                         session.meta.pop(doc_id, None)
                         session.docs.pop(doc_id, None)
@@ -440,7 +441,7 @@ async def _load_states(session: Session, doc_ids: list[str]) -> tuple[list[pipel
                     meta.num_pages,
                     meta.chunk_size,
                     meta.chunk_overlap,
-                    loaded.index,
+                    loaded.saved_index,
                 )
                 with session.lock:
                     session.docs[doc_id] = state
@@ -448,22 +449,26 @@ async def _load_states(session: Session, doc_ids: list[str]) -> tuple[list[pipel
     return states, lost
 
 
-def _restore_problem(e: Exception | None, lost: list[str]) -> JSONResponse | None:
-    """The HTTP error for a failed or partial restore, or None if all is well."""
+def _restore_failure(e: Exception) -> JSONResponse:
+    """The HTTP error when saved documents could not be loaded right now."""
     if isinstance(e, MemoryFull):
-        return _error(
-            "The server's document memory is full. Try again in a moment.",
-            503,
-        )
-    if isinstance(e, StorageUnavailable):
-        return _error("Your saved documents are temporarily unavailable. Please try again shortly.", 503)
-    if lost:
-        names = ", ".join(lost)[:200]
-        return _error(
-            f"These saved documents could no longer be restored and were removed: {names}. Please upload them again.",
-            409,
-        )
-    return None
+        return _error("The server's document memory is full. Try again in a moment.", 503)
+    return _error("Your saved documents are temporarily unavailable. Please try again shortly.", 503)
+
+
+def _lost_documents_error(lost: list[str]) -> JSONResponse | None:
+    """The 409 for saved documents that could not be restored (and were removed), or None."""
+    if not lost:
+        return None
+    names = ", ".join(lost)[:200]
+    return _error(f"These saved documents could no longer be restored and were removed: {names}. Please upload them again.", 409)
+
+
+def _owner_of(session: Session) -> str:
+    """The storage namespace of a signed-in user's workspace."""
+    if session.owner is None:
+        raise RuntimeError("not a saved workspace")
+    return session.owner
 
 
 async def _history(session: Session) -> list[dict]:
@@ -646,11 +651,15 @@ def _error(message: str, status_code: int) -> JSONResponse:
 async def _json_body(request: Request) -> dict:
     """Parsed JSON object body, or {} for a missing/invalid/non-object/oversized
     body (the size check also covers bodies sent without Content-Length)."""
-    raw = await request.body()
-    if len(raw) > MAX_JSON_BYTES:
-        return {}
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():  # stop reading at the cap, never buffer an unbounded body
+        size += len(chunk)
+        if size > MAX_JSON_BYTES:
+            return {}
+        chunks.append(chunk)
     try:
-        body = json.loads(raw)
+        body = json.loads(b"".join(chunks))
     except ValueError:
         return {}
     return body if isinstance(body, dict) else {}
@@ -686,8 +695,8 @@ async def _question_request(request: Request, session: Session | None) -> tuple[
     try:
         states, lost = await _load_states(session, wanted)
     except (MemoryFull, StorageUnavailable) as e:
-        return _restore_problem(e, [])
-    if problem := _restore_problem(None, lost):
+        return _restore_failure(e)
+    if problem := _lost_documents_error(lost):
         return problem
     return session, question, states
 
@@ -730,7 +739,17 @@ def _clean_filename(raw: str | None) -> str:
     """Basename only, no control characters, at most MAX_FILENAME_CHARS
     (keeping the extension). Filenames are shown in the UI and label passages
     in the prompt, so an attacker-chosen name must stay short and inert."""
-    name = re.sub(r"[\x00-\x1f\x7f]", "", Path(raw or "").name).strip()
+    # Windows-style separators are folded to "/" first (Path on Linux would keep
+    # "..\..\x.pdf" whole); control, bidirectional-override and zero-width
+    # characters are dropped so a name cannot reorder its own extension on screen
+    # ("report\u202efdp.exe") or hide characters.
+    name = re.sub(
+        r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]",
+        "",
+        Path((raw or "").replace("\\", "/")).name,
+    ).strip()
+    if name in (".", ".."):
+        name = ""  # a bare traversal component is not a name
     if len(name) > MAX_FILENAME_CHARS:
         stem, dot, ext = name.rpartition(".")
         name = (stem[: MAX_FILENAME_CHARS - len(ext) - 2] + "…" + dot + ext) if dot else name[:MAX_FILENAME_CHARS]
@@ -842,11 +861,10 @@ async def ingest(request: Request, file: UploadFile = File(...)):
 
     # Look the session up again: it may have expired or been evicted while
     # this upload was being indexed.
-    session = await _get_session(request)
-    is_new_session = session is None
-    if is_new_session:
-        session_id = secrets.token_urlsafe(32)
-        session = Session()
+    existing_session = await _get_session(request)
+    is_new_session = existing_session is None
+    session_id = secrets.token_urlsafe(32) if is_new_session else ""
+    session = existing_session if existing_session is not None else Session()
 
     # Re-check the aggregate budget now that this document's real size is
     # known (other uploads may have landed while it was being indexed). A new
@@ -860,6 +878,26 @@ async def ingest(request: Request, file: UploadFile = File(...)):
         )
 
     doc_id = secrets.token_urlsafe(8)
+    # Check the document cap, store and register under one lock: otherwise N
+    # uploads in flight at once all pass the check and the cap is exceeded.
+    # (Across several instances the cap can still be overshot by the uploads in
+    # flight at the same moment; the storage allowance bounds that.)
+    async with session.load_lock:
+        return await _store_uploaded_document(
+            request, session, is_new_session, session_id, index_state, doc_id, tier, max_docs
+        )
+
+
+async def _store_uploaded_document(
+    request: Request,
+    session: Session,
+    is_new_session: bool,
+    session_id: str,
+    index_state: pipeline.IndexState,
+    doc_id: str,
+    tier: auth.Tier | None,
+    max_docs: int,
+) -> JSONResponse:
     if _doc_count(session) >= max_docs:
         return _error(_doc_limit_message(tier, max_docs), 400)
     saved = None
@@ -870,7 +908,7 @@ async def ingest(request: Request, file: UploadFile = File(...)):
             packed = await run_in_threadpool(
                 docstore.pack,
                 doc_id,
-                index_state.name,
+                index_state.name or "document",
                 index_state.num_pages,
                 index_state.chunk_size,
                 index_state.chunk_overlap,
@@ -879,7 +917,7 @@ async def ingest(request: Request, file: UploadFile = File(...)):
                 None,
                 index_state.store.index,
             )
-            saved = await _repo().save(session.owner, packed, existing=session.meta)
+            saved = await _repo().save(_owner_of(session), packed, existing=session.meta)
         except docstore.StorageQuotaError:
             return _error(
                 f"Your saved-documents storage is full ({docstore.max_user_bytes() // (1024 * 1024)} MB). "
@@ -922,7 +960,7 @@ async def get_session(request: Request):
 
 def _turn(question: str, answer: str, by: dict | None) -> dict:
     """One conversation turn as stored in the session (and restored on reload)."""
-    turn = {"question": question, "answer": answer}
+    turn: dict[str, Any] = {"question": question, "answer": answer}
     if by:
         turn["answered_by"] = by
     return turn
@@ -1070,9 +1108,11 @@ async def _one_document(session: Session, doc_id) -> pipeline.IndexState | JSONR
     try:
         states, lost = await _load_states(session, [doc_id])
     except (MemoryFull, StorageUnavailable) as e:
-        return _restore_problem(e, [])
-    if problem := _restore_problem(None, lost):
+        return _restore_failure(e)
+    if problem := _lost_documents_error(lost):
         return problem
+    if not states:  # removed (elsewhere) between the membership check and the load
+        return _error("That document is not loaded.", 404)
     return states[0]
 
 
@@ -1142,28 +1182,28 @@ async def remove(request: Request):
     if user:
         session = await _user_session(user["sub"])
         if doc_id is None:
-            await _repo().delete_all(session.owner)
+            await _repo().delete_all(_owner_of(session))
             with session.lock:
                 session.meta.clear()
                 session.docs.clear()
         elif isinstance(doc_id, str) and doc_id in _doc_ids(session):
-            await _repo().delete(session.owner, doc_id)
+            await _repo().delete(_owner_of(session), doc_id)
             with session.lock:
                 session.meta.pop(doc_id, None)
                 session.docs.pop(doc_id, None)
             if not _doc_count(session):
-                await _repo().clear_history(session.owner)
+                await _repo().clear_history(_owner_of(session))
         return {"ok": True, "documents": _documents(session)}
 
     session_id = request.cookies.get(_cookie_name(request), "")
-    session = _sessions.get(session_id)
+    guest = _sessions.get(session_id)
 
-    if session is not None and doc_id is not None:
-        with session.lock:
-            session.docs.pop(doc_id, None)
-            has_documents = bool(session.docs)
+    if guest is not None and doc_id is not None:
+        with guest.lock:
+            guest.docs.pop(doc_id, None)
+            has_documents = bool(guest.docs)
         if has_documents:
-            return {"ok": True, "documents": _documents(session)}
+            return {"ok": True, "documents": _documents(guest)}
 
     _sessions.pop(session_id, None)
     response = JSONResponse({"ok": True, "documents": []})
@@ -1189,7 +1229,7 @@ async def _adopt_guest_documents(request: Request, uid: str) -> bool:
             packed = await run_in_threadpool(
                 docstore.pack,
                 doc_id,
-                state.name,
+                state.name or "document",
                 state.num_pages,
                 state.chunk_size,
                 state.chunk_overlap,
@@ -1198,7 +1238,7 @@ async def _adopt_guest_documents(request: Request, uid: str) -> bool:
                 None,
                 state.store.index,
             )
-            saved = await _repo().save(session.owner, packed, existing=session.meta)
+            saved = await _repo().save(_owner_of(session), packed, existing=session.meta)
         except Exception as e:  # over quota, storage trouble: keep going with the rest
             log.warning("Could not keep a guest document on sign-in (%s)", type(e).__name__)
             continue
@@ -1206,7 +1246,7 @@ async def _adopt_guest_documents(request: Request, uid: str) -> bool:
             session.docs[doc_id] = state
             session.meta[doc_id] = saved
     if turns and _doc_count(session):
-        await _repo().set_history(session.owner, turns)
+        await _repo().set_history(_owner_of(session), turns)
     _sessions.pop(request.cookies.get(_cookie_name(request), ""), None)
     return True
 
@@ -1221,7 +1261,7 @@ async def login(request: Request):
         return limited
     token = (await _json_body(request)).get("id_token")
     try:
-        profile = await run_in_threadpool(auth.verify_id_token, token)
+        profile = await run_in_threadpool(auth.verify_id_token, token if isinstance(token, str) else "")
     except auth.AuthError as e:
         log.warning("Sign-in rejected: %s", e)
         return _error("Couldn't sign you in. Please try again.", 401)

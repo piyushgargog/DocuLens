@@ -175,6 +175,7 @@ DOC_TEXT = (
 
 
 def _state(kind_name, monkeypatch):
+    monkeypatch.setenv("DOCULENS_STATE_KEY", "test-signing-key")  # saved HNSW graphs are signed
     monkeypatch.setenv("VECTOR_INDEX", kind_name)
     state = pipeline.ingest(DOC_TEXT.encode(), name="planets.txt", chunk_size=120, chunk_overlap=20)
     assert state.store.index.kind == kind_name
@@ -218,14 +219,14 @@ def test_an_approximate_index_is_saved_and_reloaded_not_rebuilt(monkeypatch):
     packed, meta, backend, repo = _roundtrip(state)
     assert packed.index_blob and meta.index_kind == "hnsw"
     loaded = asyncio.run(repo.load("o", meta))
-    assert loaded.index is not None and loaded.index.kind == "hnsw" and loaded.index.size() == meta.num_chunks
+    assert loaded.saved_index is not None and loaded.saved_index.kind == "hnsw" and loaded.saved_index.size() == meta.num_chunks
 
 
 def test_exact_indexes_are_not_stored_because_rebuilding_them_is_free(monkeypatch):
     state = _state("flat", monkeypatch)
     packed, meta, backend, repo = _roundtrip(state)
     assert packed.index_blob is None and meta.index_kind == "flat"
-    assert asyncio.run(repo.load("o", meta)).index is None
+    assert asyncio.run(repo.load("o", meta)).saved_index is None
 
 
 @pytest.mark.parametrize("damage", ["missing", "tampered", "wrong-size"])
@@ -242,8 +243,8 @@ def test_a_damaged_saved_index_is_rebuilt_never_fatal(monkeypatch, damage):
         asyncio.run(repo._artifacts.put(key, small, 60))
         meta = docstore.DocMeta(**{**meta.to_dict(), "index_digest": __import__("hashlib").sha256(small).hexdigest()})
     loaded = asyncio.run(repo.load("o", meta))
-    assert loaded.index is None and len(loaded.chunks) == meta.num_chunks  # the document itself is intact
-    restored = pipeline.restore(loaded.chunks, loaded.embeddings, "planets.txt", 1, 120, 20, loaded.index)
+    assert loaded.saved_index is None and len(loaded.chunks) == meta.num_chunks  # the document itself is intact
+    restored = pipeline.restore(loaded.chunks, loaded.embeddings, "planets.txt", 1, 120, 20, loaded.saved_index)
     assert restored.store.index.size() == meta.num_chunks
 
 
@@ -253,3 +254,21 @@ def test_deleting_a_document_deletes_its_index_blob_too(monkeypatch):
     assert any(k.startswith("a:o:d1:index") for k in backend._blobs)
     asyncio.run(repo.delete("o", "d1"))
     assert not any(k.startswith("a:o:d1") for k in backend._blobs)
+
+
+def test_without_a_signing_key_an_approximate_index_is_not_stored_and_is_rebuilt(monkeypatch):
+    state = _state("hnsw", monkeypatch)
+    monkeypatch.delenv("DOCULENS_STATE_KEY")
+    packed, meta, backend, repo = _roundtrip(state)
+    assert packed.index_blob is None and meta.index_kind == "flat"
+    assert asyncio.run(repo.load("o", meta)).saved_index is None
+
+
+def test_a_saved_index_signed_with_another_key_is_never_deserialised(monkeypatch):
+    state = _state("hnsw", monkeypatch)
+    packed, meta, backend, repo = _roundtrip(state)
+    monkeypatch.setenv("DOCULENS_STATE_KEY", "a-different-key")  # e.g. the blob came from somewhere else
+    called = []
+    monkeypatch.setattr(vector_index, "load_index", lambda kind, blob: called.append(1))
+    loaded = asyncio.run(repo.load("o", meta))
+    assert loaded.saved_index is None and called == []

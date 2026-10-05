@@ -101,7 +101,8 @@ def _has_visible_content(page) -> bool:
     """Something an OCR pass could read: an image on the page."""
     try:
         return bool(page.get_images())
-    except Exception:
+    except Exception as e:
+        log.debug("Could not list page images (%s)", type(e).__name__)
         return False
 
 
@@ -149,8 +150,8 @@ def _detect_rotation(image) -> int:
         osd = pytesseract.image_to_osd(image, output_type=Output.DICT, timeout=15)
         if float(osd.get("orientation_conf", 0)) >= 2.0 and int(osd.get("rotate", 0)) in (90, 180, 270):
             return int(osd["rotate"])
-    except Exception:
-        pass
+    except Exception as e:  # OSD data missing, image too small, timeout: just do not rotate
+        log.debug("Orientation detection unavailable (%s)", type(e).__name__)
     return 0
 
 
@@ -225,8 +226,8 @@ def _ocr_page(page, lang: str, timeout: float, run=None) -> tuple[str, float, bo
             text2 = normalize_ocr(text2)
             if _score(text2, conf2) > _score(text, conf):
                 text, conf, rotated = text2, conf2, bool(angle)
-        except Exception:
-            pass  # keep the first reading
+        except Exception as e:  # keep the first reading
+            log.debug("OCR retry failed (%s)", type(e).__name__)
     return text, conf, rotated
 
 
@@ -235,17 +236,18 @@ def _ocr_page(page, lang: str, timeout: float, run=None) -> tuple[str, float, bo
 
 def _ranges(numbers: list[int]) -> str:
     """[3,4,5,9] -> "3-5, 9"."""
-    out, start, prev = [], None, None
-    for n in sorted(numbers):
-        if start is None:
-            start = prev = n
-        elif n == prev + 1:
+    out: list[str] = []
+    ordered = sorted(numbers)
+    if not ordered:
+        return ""
+    start = prev = ordered[0]
+    for n in ordered[1:]:
+        if n == prev + 1:
             prev = n
         else:
             out.append(f"{start}-{prev}" if prev != start else str(start))
             start = prev = n
-    if start is not None:
-        out.append(f"{start}-{prev}" if prev != start else str(start))
+    out.append(f"{start}-{prev}" if prev != start else str(start))
     return ", ".join(out)
 
 
@@ -278,8 +280,9 @@ def load_pdf(pdf_bytes: bytes, run=None) -> LoadResult:
             try:
                 page = doc[i]
                 text = page.get_text().strip()
-            except Exception:
-                continue  # one malformed page must not sink the document
+            except Exception as e:  # one malformed page must not sink the document
+                log.warning("Skipping an unreadable PDF page (%s)", type(e).__name__)
+                continue
             if len(text) >= OCR_MIN_CHARS and not looks_garbled(text):
                 text_pages[i + 1] = text
             elif _has_visible_content(page):

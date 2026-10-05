@@ -39,7 +39,7 @@ class VectorStore:
         if top_k == 0:
             return []
         scores, ids = self.index.search(query_embedding, top_k)
-        return [{**self.chunks[int(i)], "score": float(s)} for s, i in zip(scores, ids)]
+        return [{**self.chunks[int(i)], "score": float(s)} for s, i in zip(scores, ids, strict=True)]
 
     def without(self, drop: set[int]) -> "VectorStore":
         """A new store with the chunks at these positions removed. Indexes

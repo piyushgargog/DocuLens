@@ -46,6 +46,37 @@ def _load_text(data: bytes) -> list[str]:
     return _paragraphs(text)
 
 
+MAX_DOCX_ENTRIES = 5000
+MAX_DOCX_UNPACKED_BYTES = 100 * 1024 * 1024  # all parts together
+MAX_DOCX_PART_BYTES = 50 * 1024 * 1024  # any one part
+MAX_DOCX_RATIO = 200  # uncompressed : compressed, for parts over 1 MB
+
+
+def docx_is_safe(data: bytes) -> bool:
+    """A .docx is a zip file, and a zip file a few KB long can claim to hold
+    gigabytes. Check the declared sizes (cheap, from the directory only) before
+    anything is decompressed: entry count, per-part and total size, and the
+    compression ratio of large parts."""
+    import io
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            infos = archive.infolist()
+            if len(infos) > MAX_DOCX_ENTRIES:
+                return False
+            total = 0
+            for info in infos:
+                total += info.file_size
+                if info.file_size > MAX_DOCX_PART_BYTES or total > MAX_DOCX_UNPACKED_BYTES:
+                    return False
+                if info.file_size > 1024 * 1024 and info.file_size > MAX_DOCX_RATIO * max(info.compress_size, 1):
+                    return False
+            return True
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return False
+
+
 def _load_docx(data: bytes) -> list[str]:
     """Paragraphs and table cell text from a .docx, in document order."""
     try:
@@ -53,6 +84,8 @@ def _load_docx(data: bytes) -> list[str]:
 
         from docx import Document
     except Exception:
+        return []
+    if not docx_is_safe(data):
         return []
     try:
         doc = Document(io.BytesIO(data))

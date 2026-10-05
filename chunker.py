@@ -284,7 +284,9 @@ def _split_table(table: str, limit: int) -> list[str]:
     header = rows[0] if len(rows[0]) <= limit // 3 else ""
     body = rows[1:] if header else rows
     room = limit - (len(header) + 1 if header else 0)
-    pieces, current, size = [], [], 0
+    pieces: list[str] = []
+    current: list[str] = []
+    size = 0
     for row in body:
         row_parts = _split_words(row, room) if len(row) > room else [row]
         for part in row_parts:
@@ -325,7 +327,7 @@ def _page_units(
 
 
 def _render(units: list[Unit]) -> str:
-    out = ""
+    out, prev_kind = "", ""
     for u in units:
         out = u.text if not out else out + ("\n" if "table" in (u.kind, prev_kind) else " ") + u.text
         prev_kind = u.kind

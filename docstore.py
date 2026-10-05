@@ -24,6 +24,7 @@ its artifacts (expiry, eviction, corruption) is detected on load and cleaned up.
 
 import asyncio
 import hashlib
+import hmac
 import json
 import os
 import time
@@ -68,6 +69,15 @@ def retention_seconds() -> int:
 
 def max_user_bytes() -> int:
     return _env_int("USER_STORAGE_MB", 20) * 1024 * 1024
+
+
+def state_key() -> bytes:
+    """Secret used to sign saved index blobs (DOCULENS_STATE_KEY); empty = off."""
+    return os.environ.get("DOCULENS_STATE_KEY", "").strip().encode("utf-8")
+
+
+def _index_signature(blob: bytes) -> str:
+    return hmac.new(state_key(), blob, hashlib.sha256).hexdigest()
 
 
 def owner_key(uid: str) -> str:
@@ -131,7 +141,7 @@ class Packed:
 class Loaded(NamedTuple):
     chunks: list[dict]
     embeddings: np.ndarray
-    index: "vector_index.VectorIndex | None"  # None: build one from the embeddings
+    saved_index: "vector_index.VectorIndex | None"  # None: build one from the embeddings
 
 
 def pack(
@@ -152,7 +162,11 @@ def pack(
         raise ValueError("chunks and embeddings must be the same length")
     chunks_blob = zlib.compress(json.dumps(chunks, ensure_ascii=False).encode("utf-8"), 6)
     emb_blob = embeddings.astype("float16").tobytes()
-    index_blob = index.save() if index is not None and index.kind != "flat" else None
+    # A saved HNSW graph is deserialised by FAISS, which is not hardened against
+    # hostile bytes, so it is stored only when a signing key is configured and is
+    # loaded only if its signature verifies (see state_key()); otherwise it is
+    # simply rebuilt from the embeddings, which are always stored.
+    index_blob = index.save() if index is not None and index.kind != "flat" and state_key() else None
     now = time.time()
     meta = DocMeta(
         id=doc_id,
@@ -166,8 +180,8 @@ def pack(
         digest=hashlib.sha256(chunks_blob + emb_blob).hexdigest(),
         created=now,
         expires=now + (retention_seconds() if ttl is None else ttl),
-        index_kind=index.kind if index_blob is not None else "flat",
-        index_digest=hashlib.sha256(index_blob).hexdigest() if index_blob is not None else "",
+        index_kind=index.kind if (index is not None and index_blob is not None) else "flat",
+        index_digest=_index_signature(index_blob) if index_blob is not None else "",
     )
     return Packed(chunks_blob, emb_blob, meta, index_blob)
 
@@ -359,9 +373,9 @@ class DocumentRepository:
             raise DocumentMissingError(meta.id)
         chunks, embeddings = unpack(meta, chunks_blob, emb_blob)
         index = None
-        if meta.index_kind != "flat":
+        if meta.index_kind != "flat" and state_key():
             blob = await self._artifacts.get(self._blob_key(owner, meta.id, "index"))
-            if blob is not None and hashlib.sha256(blob).hexdigest() == meta.index_digest:
+            if blob is not None and hmac.compare_digest(_index_signature(blob), meta.index_digest):
                 try:
                     index = vector_index.load_index(meta.index_kind, blob)
                     if index.size() != meta.num_chunks:

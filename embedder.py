@@ -35,7 +35,8 @@ _cache_lock = threading.Lock()
 
 
 def _key(text: str) -> str:
-    return hashlib.sha1(text.encode("utf-8", "surrogatepass")).hexdigest()
+    # A cache key, not a security control; BLAKE2b is fast and is not flagged as weak.
+    return hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=16).hexdigest()
 
 
 def clear_cache() -> None:
@@ -58,11 +59,11 @@ def embed(texts: list[str]) -> np.ndarray:
                 found[key] = _cache[key]
     missing = list(dict.fromkeys(k for k in keys if k not in found))
     if missing:
-        first_text = {k: t for k, t in zip(keys, texts)}
+        first_text = dict(zip(keys, texts, strict=True))
         model = get_model()
         encoded = model.encode([first_text[k] for k in missing], convert_to_numpy=True, normalize_embeddings=True).astype("float32")
         with _cache_lock:
-            for key, vector in zip(missing, encoded):
+            for key, vector in zip(missing, encoded, strict=True):
                 _cache[key] = vector
                 found[key] = vector
             while len(_cache) > CACHE_SIZE:

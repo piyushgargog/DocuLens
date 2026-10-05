@@ -31,6 +31,7 @@ from cryptography import x509
 CERTS_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
 CERTS_TIMEOUT = 10
 CERTS_DEFAULT_TTL = 60 * 60
+CERTS_MIN_REFRESH = 60  # seconds between refetches triggered by an unknown key id
 
 LOGIN_TTL = 7 * 24 * 60 * 60  # login sessions slide: renewed when used...
 LOGIN_REFRESH = 60 * 60  # ...but at most once an hour (one store write, not one per request)
@@ -108,11 +109,18 @@ class _Certs:
         self._lock = threading.Lock()
         self._keys: dict[str, object] = {}
         self._expires = 0.0
+        self._fetched = 0.0
 
     def get(self, kid: str):
         with self._lock:
-            if kid in self._keys and time.time() < self._expires:
+            now = time.time()
+            if kid in self._keys and now < self._expires:
                 return self._keys[kid]
+            # An unknown key id means "rotated" or "forged". Refetching on every
+            # forged token would let anyone make this server call Google at will,
+            # so a refetch happens at most once per CERTS_MIN_REFRESH seconds.
+            if self._keys and now - self._fetched < CERTS_MIN_REFRESH and now < self._expires:
+                return None
             self._refresh()
             return self._keys.get(kid)
 
@@ -128,11 +136,12 @@ class _Certs:
         except (requests.RequestException, ValueError, AttributeError) as e:
             raise AuthError("Could not load Google's signing keys.") from e
         match = re.search(r"max-age=(\d+)", response.headers.get("Cache-Control", ""))
-        self._expires = time.time() + (int(match.group(1)) if match else CERTS_DEFAULT_TTL)
+        self._fetched = time.time()
+        self._expires = self._fetched + (int(match.group(1)) if match else CERTS_DEFAULT_TTL)
 
     def clear(self) -> None:
         with self._lock:
-            self._keys, self._expires = {}, 0.0
+            self._keys, self._expires, self._fetched = {}, 0.0, 0.0
 
 
 certs = _Certs()

@@ -5,12 +5,12 @@ POST is enough for one chat-completion call, and keeps the dependency
 footprint and the amount of "magic" small (see DECISIONS.md).
 """
 
-import json
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit
 
 import logging
 
@@ -152,13 +152,27 @@ def _retry_wait_seconds(response: requests.Response) -> float | None:
 _FENCE_TOKENS = ("<<<BEGIN PASSAGES>>>", "<<<END PASSAGES>>>")
 
 
+_FENCE_LOOKALIKE = re.compile("[<\uff1c\u2039\u00ab]{3,}|[>\uff1e\u203a\u00bb]{3,}")
+_FAKE_LABEL = re.compile(r"\[(?=[^\]\n]{0,80}?\bPages?\s*\d)", re.IGNORECASE)
+
+
+def _neutralize(text: str) -> str:
+    """Make document-controlled text unable to pose as our own structure: any run
+    of three or more angle brackets (so "<<< END PASSAGES >>>" and its case,
+    spacing and full-width variants, not just the exact token) becomes inert
+    look-alike quotes, and "[Page N]" labels inside the text are bracketed
+    differently so a passage cannot invent a citation the system did not add."""
+    text = _FENCE_LOOKALIKE.sub(lambda m: "\u2039" * len(m.group()) if m.group()[0] in "<\uff1c\u2039\u00ab" else "\u203a" * len(m.group()), text)
+    return _FAKE_LABEL.sub("\uff3b", text)
+
+
 def _sanitize_passage_text(text: str) -> str:
     """Neutralize delimiter tokens and citation-like labels inside passage text
     so they cannot break the prompt's structural fencing or be confused with
     labels the system itself adds."""
     for token in _FENCE_TOKENS:
         text = text.replace(token, token.replace("<<<", "\u2039\u2039\u2039").replace(">>>", "\u203a\u203a\u203a"))
-    return text
+    return _neutralize(text)
 
 
 def _passage_label(passage: dict) -> str:
@@ -166,9 +180,9 @@ def _passage_label(passage: dict) -> str:
     The doc name is untrusted (the uploaded filename); fence tokens in it are
     neutralized so it cannot break the passage block structure."""
     if passage.get("doc"):
-        doc = passage['doc']
-        for token in _FENCE_TOKENS:
-            doc = doc.replace(token, token.replace("<<<", "\u2039\u2039\u2039").replace(">>>", "\u203a\u203a\u203a"))
+        # The filename is attacker-chosen: no fence lookalikes, and no brackets that
+        # could close the label early and open a fake one.
+        doc = _neutralize(str(passage["doc"])).replace("[", "(").replace("]", ")")
         return f"[{doc}, Page {passage['page']}]"
     return f"[Page {passage['page']}]"
 
@@ -453,13 +467,13 @@ def ask_stream(
     passages: list[dict],
     timeout: int = 30,
     history: list[dict] | None = None,
-) -> Iterator[tuple[str, str]]:
+) -> Generator[tuple[str, str], None, None]:
     """Like ask(), but yields (kind, text) pieces as the model writes them:
     kind "content" for the answer, "reasoning" for the model's thinking."""
     return _chat_stream(build_messages(question, passages, history), timeout)
 
 
-def _chat_stream(messages: list[dict], timeout: int) -> Iterator[tuple[str, str]]:
+def _chat_stream(messages: list[dict], timeout: int) -> Generator[tuple[str, str], None, None]:
     """Stream one chat completion as (kind, text) pieces -- kind "content" or
     "reasoning" -- with the same provider failover and empty-reply handling as
     _chat(). A provider can be swapped only until the first *content* piece
@@ -563,15 +577,19 @@ def _post(messages: list[dict], route: Route, timeout: int, stream: bool = False
     """POST one chat completion request to one route, with 429 retry/backoff.
     Returns the successful response (streaming or not). An impatient call
     (another provider is still available) waits only briefly on a rate limit."""
-    request = llm_adapters.get(route.api).request(route, messages, stream)
+    outgoing = llm_adapters.get(route.api).request(route, messages, stream)
+    # Defence in depth against SSRF: the target is built from operator configuration
+    # only, but a bug in an adapter must never let it leave the configured host.
+    if urlsplit(outgoing.url).netloc != urlsplit(route.base_url).netloc:
+        raise LLMRequestError("Refusing to send a request to a host other than the configured provider.")
     max_wait = MAX_RETRY_WAIT_SECONDS if patient else IMPATIENT_WAIT_SECONDS
 
     for attempt in range(MAX_RETRIES + 1):
         try:
             response = requests.post(
-                request.url,
-                json=request.payload,
-                headers=request.headers,
+                outgoing.url,
+                json=outgoing.payload,
+                headers=outgoing.headers,
                 timeout=(CONNECT_TIMEOUT_SECONDS, timeout),
                 stream=stream,
             )
