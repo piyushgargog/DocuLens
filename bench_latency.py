@@ -160,7 +160,6 @@ def main() -> None:
 
     state = pipeline.restore(chunks, vectors, "p.pdf", len(pages), 800, 150)
     big_state = pipeline.restore(big_chunks, big_vectors, "big.pdf", len(big), 800, 150)
-    owner = docstore.owner_key("bench")
     packed = docstore.pack("d", "p.pdf", len(pages), 800, 150, chunks, vectors)
     big_packed = docstore.pack("d", "big.pdf", len(big), 800, 150, big_chunks, big_vectors)
     record("pack", f"pack (compress), {len(texts)} chunks, {packed.meta.size_bytes / 1e3:.0f} KB", median_ms(lambda: docstore.pack("d", "p.pdf", len(pages), 800, 150, chunks, vectors), args.repeat))

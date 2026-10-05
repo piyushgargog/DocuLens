@@ -55,7 +55,6 @@ def run(spec_path: str, chunker: str) -> dict:
     pages = load_pdf_pages((ROOT / spec["document"]).read_bytes())
     chunks = chunk_document(pages, 800, 150, strategy=chunker)
     state = pipeline.restore(chunks, embedder.embed([c["text"] for c in chunks]), "doc", len(pages), 800, 150)
-    results = {name: [] for name in ("alone", "concat (old)", "resolved", "standalone")}
     by_kind: dict[str, dict] = {}
     rows = []
     for item in spec["items"]:

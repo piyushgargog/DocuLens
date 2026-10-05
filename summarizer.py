@@ -30,6 +30,7 @@ import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from typing import Any
 
 import llm_client
 from observability import log
@@ -147,7 +148,7 @@ def reduce_calls(summaries: int, fanin: int) -> int:
     return max(calls, 1)
 
 
-def plan(chunks: list[dict]) -> tuple[list[Batch], dict]:
+def plan(chunks: list[dict]) -> tuple[list[Batch], dict[str, Any]]:
     """Choose batches that respect the call budget. Returns (batches to summarise,
     coverage info). If everything cannot fit, whole batches are skipped evenly."""
     total = _total(chunks)
@@ -168,7 +169,7 @@ def plan(chunks: list[dict]) -> tuple[list[Batch], dict]:
         skipped = [b for i, b in enumerate(batches) if i not in chosen]
         batches = [b for i, b in enumerate(batches) if i in chosen]
     used_chars = sum(len(b.text) for b in batches)
-    coverage = {
+    coverage: dict[str, Any] = {
         "chunks_total": len(chunks),
         "chars_total": total,
         "chars_summarised": used_chars,
@@ -230,7 +231,7 @@ def summarize_document(chunks: list[dict]) -> SummaryResult:
     if total <= single_call_chars():
         text = llm_client.summarize(chunks, complete=True)
         pages = sorted({c["page"] for c in chunks})
-        coverage = {"chunks_total": len(chunks), "chars_total": total, "chars_summarised": total, "batches": 1,
+        coverage: dict[str, Any] = {"chunks_total": len(chunks), "chars_total": total, "chars_summarised": total, "batches": 1,
                     "skipped_ranges": [], "complete": True, "llm_calls": 1, "failed_ranges": [], "pages": [pages[0], pages[-1]]}
         return SummaryResult(text, [{**c, "score": None} for c in chunks[:12]], coverage)
 
