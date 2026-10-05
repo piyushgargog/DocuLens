@@ -1,6 +1,6 @@
 {
-  "generated": "2026-10-05T14:53:11+00:00",
-  "commit": "b988c97c07d91ffe2c4331d521d2f7143f93541f",
+  "generated": "2026-10-05T15:06:29+00:00",
+  "commit": "3ae22b95957217595026d5dc2278fcade5e350a2",
   "audited_scope": "DocuLens v4 working tree on branch feat/v4 (see SECURITY_AUDIT.md)",
   "required_scanners": [
     "pytest",
@@ -25,15 +25,13 @@
     "scorecard"
   ],
   "blocked_with_ci_coverage": [
-    "trivy-image",
     "zap-baseline",
-    "sbom",
     "scorecard"
   ],
   "scanners": {
     "pytest": {
       "status": "PASS",
-      "detail": "718 passed (unit, security regression, property-based, API fuzzing)"
+      "detail": "718 passed locally and in CI (unit, security regression, property-based, API fuzzing)"
     },
     "playwright-e2e": {
       "status": "PASS",
@@ -103,19 +101,19 @@
     },
     "github-code-scanning": {
       "status": "PASS",
-      "detail": "CodeQL default setup; 0 open alerts, 0 Dependabot alerts, 0 secret-scanning alerts (gh api)"
+      "detail": "CodeQL (python, javascript-typescript, actions) green on PR #47 after fixing one test-file alert (F-21); 0 open alerts on main, 0 Dependabot, 0 secret-scanning"
     },
     "trivy-image": {
-      "status": "BLOCKED",
-      "detail": "Docker daemon not running on the audit machine; runs in container-security.yml"
+      "status": "PASS",
+      "detail": "CI (container-security.yml, PR #47): HIGH findings in pip's bundled libs and libpcre2 were fixed (F-20); second run clean; hardened boot test passed"
     },
     "zap-baseline": {
       "status": "BLOCKED",
       "detail": "no Docker/ZAP locally; runs weekly in dynamic-security.yml"
     },
     "sbom": {
-      "status": "BLOCKED",
-      "detail": "Syft runs in container-security.yml"
+      "status": "PASS",
+      "detail": "CI (container-security.yml): SPDX SBOM generated and uploaded as an artifact"
     },
     "scorecard": {
       "status": "BLOCKED",
@@ -319,6 +317,28 @@
       "tags": [
         "ssrf"
       ]
+    },
+    {
+      "id": "F-20",
+      "severity": "high",
+      "title": "Container image: HIGH findings in pip's bundled urllib3/msgpack/setuptools and an unpatched libpcre2 (Trivy, CI)",
+      "status": "fixed",
+      "scanner": "trivy",
+      "remediation": "apt-get upgrade in the image and pip/setuptools/wheel removed from the runtime image; thin update image restores pip only for its build step",
+      "regression_test": "container-security.yml: Trivy image scan + hardened boot test (--read-only, --cap-drop ALL)",
+      "tags": [
+        "supply-chain"
+      ]
+    },
+    {
+      "id": "F-21",
+      "severity": "low",
+      "title": "CodeQL py/incomplete-url-substring-sanitization in a test that checked links with a substring",
+      "status": "fixed",
+      "scanner": "codeql",
+      "remediation": "the test compares parsed hostnames",
+      "regression_test": "tests/test_security_hardening.py::TestFrontendSinks::test_external_scripts_are_same_origin_only",
+      "tags": []
     },
     {
       "id": "F-17",

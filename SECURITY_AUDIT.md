@@ -1,7 +1,7 @@
 # Security audit: DocuLens v4 hardening pass
 
 - **Date:** 2026-10-05
-- **Base commit:** `b988c97c07d91ffe2c4331d521d2f7143f93541f` (branch `feat/v4`; the hardening changes are in the commits that follow it)
+- **Base commit:** `3ae22b95957217595026d5dc2278fcade5e350a2` (branch `feat/v4`; the hardening changes are in the commits that follow it)
 - **Scope:** the application (`*.py`, `static/`), its tests, the GitHub workflows, both Dockerfiles, dependencies (`requirements*.txt`, `tools/firebase`) and the git history. The live site was checked passively (headers) only; nothing was attacked in production.
 - **Result:** `python scripts/release_gate.py security-results.json` -> **PASS** (machine-readable record: [`security-results.json`](security-results.json)).
 
@@ -12,9 +12,9 @@ This is evidence of what was tested and found, not a claim that the application 
 | | |
 |---|---|
 | Critical | 0 unresolved |
-| High | 0 unresolved (1 found and fixed: F-12) |
+| High | 0 unresolved (2 found and fixed: F-12, F-20) |
 | Medium | 9 fixed, 2 accepted with an owner and a review date (F-17, F-19) |
-| Low | 6 fixed or false positive, 1 accepted (F-18) |
+| Low | 7 fixed or false positive, 1 accepted (F-18) |
 | Secrets | 0 (history of 102 commits and tracked files) |
 | Failing tests | 0 (718 unit/property/fuzz + 10 browser) |
 | Dependency advisories | 0 (pip-audit, OSV, npm audit, Trivy) |
@@ -24,7 +24,7 @@ This is evidence of what was tested and found, not a claim that the application 
 
 | Tool | Status | Version | Notes |
 |---|---|---|---|
-| pytest | PASS |  | 718 passed (unit, security regression, property-based, API fuzzing) |
+| pytest | PASS |  | 718 passed locally and in CI (unit, security regression, property-based, API fuzzing) |
 | playwright-e2e | PASS |  | 10 passed |
 | bandit | PASS | 1.9.4 | 0 issues after fixes (initial: 1 high B324, 3 low) |
 | ruff | PASS | 0.16.10 | rules E9,F,B,S |
@@ -39,10 +39,10 @@ This is evidence of what was tested and found, not a claim that the application 
 | hadolint | PASS | 2.x | Dockerfile, deploy/Dockerfile.update; ignored rules justified in .hadolint.yaml |
 | schemathesis | PASS | 4.29.3 | 13/13 operations, 172 cases, 0 failures (sign-in configured) |
 | hypothesis | PASS | 6.168.4 | 22 properties; found F-04 and the '..' filename case |
-| github-code-scanning | PASS |  | CodeQL default setup; 0 open alerts, 0 Dependabot alerts, 0 secret-scanning alerts (gh api) |
-| trivy-image | BLOCKED |  | Docker daemon not running on the audit machine; runs in container-security.yml |
+| github-code-scanning | PASS |  | CodeQL (python, javascript-typescript, actions) green on PR #47 after fixing one test-file alert (F-21); 0 open alerts on main, 0 Dependabot, 0 secret-scanning |
+| trivy-image | PASS |  | CI (container-security.yml, PR #47): HIGH findings in pip's bundled libs and libpcre2 were fixed (F-20); second run clean; hardened boot test passed |
 | zap-baseline | BLOCKED |  | no Docker/ZAP locally; runs weekly in dynamic-security.yml |
-| sbom | BLOCKED |  | Syft runs in container-security.yml |
+| sbom | PASS |  | CI (container-security.yml): SPDX SBOM generated and uploaded as an artifact |
 | scorecard | BLOCKED |  | runs on GitHub in scorecard.yml |
 | live-passive | PASS |  | production headers checked (CSP, HSTS, nosniff, frame, referrer, COOP/CORP); no active testing against production |
 
@@ -68,6 +68,8 @@ This is evidence of what was tested and found, not a claim that the application 
 | F-14 | low | firebase meta-package pulled firestore/grpc (4 high npm advisories) although only auth is bundled | fixed | tools/firebase now depends on @firebase/app and @firebase/auth only; npm audit: 0 | `npm audit (tools/firebase)` |
 | F-15 | low | SHA-1 used for an in-memory cache key (bandit B324 high); silent except-pass in pdf_loader (B110/B112) | fixed | BLAKE2b; the exceptions are logged | `bandit clean` |
 | F-16 | low | Semgrep ssrf-injection-requests on llm_client._post (variable named 'request') | false_positive | the URL is built from operator configuration only; renamed and a host-equality check added as defence in depth | `tests/test_security_hardening.py::TestOutboundRequests` |
+| F-20 | high | Container image: HIGH findings in pip's bundled urllib3/msgpack/setuptools and an unpatched libpcre2 (Trivy, CI) | fixed | apt-get upgrade in the image and pip/setuptools/wheel removed from the runtime image; thin update image restores pip only for its build step | `container-security.yml: Trivy image scan + hardened boot test (--read-only, --cap-drop ALL)` |
+| F-21 | low | CodeQL py/incomplete-url-substring-sanitization in a test that checked links with a substring | fixed | the test compares parsed hostnames | `tests/test_security_hardening.py::TestFrontendSinks::test_external_scripts_are_same_origin_only` |
 | F-17 | medium | CSP must allow https://apis.google.com for Firebase's popup sign-in | accepted | applies only when Firebase is configured; every DOM sink is textContent (tested), no inline script/eval, object-src and base-uri none | `tests/test_security_hardening.py::TestFrontendSinks` |
 | F-18 | low | A stolen Firebase ID token can be exchanged for a login for up to an hour (no jti to revoke) | accepted | inherent to bearer tokens; /api/login is rate limited, our own session is separately revocable (logout) | `tests/test_auth.py` |
 | F-19 | medium | A PDF 'flate bomb' can exhaust memory inside PyMuPDF text extraction, which cannot be bounded in-process | accepted | container memory limit and restart policy (deploy command, container-security.yml); page and time limits; recommended: run behind --memory | `tests/test_security_hardening.py::TestUploads::test_a_pdf_with_an_absurd_page_count_is_bounded` |
@@ -85,9 +87,9 @@ Reproduction for each is its regression test: it fails against the pre-fix code 
 - No end-to-end Firebase popup sign-in against a real project (needs the owner's project); the verification path is tested with real RS256 tokens and a fake certificate endpoint.
 - OCR is tested with a scripted engine; real scans were not available here.
 - Prompt injection: the structure defences are tested offline; the model-behaviour tests (`test_prompt_injection.py`) need an API key and were not run in this pass. Prompt injection is mitigated, not solved.
-- ZAP, Trivy image, SBOM and Scorecard run in GitHub workflows and have not produced results yet.
+- ZAP (weekly) and Scorecard (on push to main) have not produced results yet; Trivy image and the SBOM ran in CI on PR #47 and passed.
 - Upstash and Firebase are third parties: their availability and security are outside this audit.
 
 ## Release decision
 
-The release gate passes with the blocked scanners covered by CI. Release also requires those workflows to be green on the pull request.
+The release gate passes. All checks on PR #47 are green; ZAP and Scorecard are scheduled workflows that have not run yet.
