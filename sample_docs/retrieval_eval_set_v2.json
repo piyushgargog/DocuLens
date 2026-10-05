@@ -1,0 +1,358 @@
+{
+ "document": "sample_docs/dev_real_world_document.pdf",
+ "description": "Second labelled retrieval set for 'Attention Is All You Need', written to be harder and less lexically leaky than the first: paraphrased questions share few words with the evidence; exact-number, entity, flattened-table, very short and cross-page questions are included. A chunk is relevant if it contains an evidence phrase (whitespace-normalised, case-insensitive); for `mode: all` (cross-page) every phrase must be covered by the top-k together. Limitations: one document, one author (who also knew the text), 38 questions; BM25 still benefits wherever the numbers or names are literal.",
+ "items": [
+  {
+   "id": 1,
+   "category": "paraphrase",
+   "question": "Which regularisation technique randomly silences units, and where is it applied?",
+   "pages": [
+    8
+   ],
+   "evidence": "We apply dropout [33] to the output"
+  },
+  {
+   "id": 2,
+   "category": "paraphrase",
+   "question": "What stops the decoder from peeking at words that come later?",
+   "pages": [
+    3,
+    5
+   ],
+   "evidence": [
+    "positions from attending to subsequent",
+    "We need to prevent leftward"
+   ]
+  },
+  {
+   "id": 3,
+   "category": "paraphrase",
+   "question": "How does the learning rate change as training goes on?",
+   "pages": [
+    7
+   ],
+   "evidence": "increasing the learning rate linearly"
+  },
+  {
+   "id": 4,
+   "category": "paraphrase",
+   "question": "Why can order information simply be summed with the word vectors?",
+   "pages": [
+    6
+   ],
+   "evidence": "positional encodings have the same dimension"
+  },
+  {
+   "id": 5,
+   "category": "paraphrase",
+   "question": "Why does splitting into several heads not make it more expensive?",
+   "pages": [
+    5
+   ],
+   "evidence": "the total computational cost"
+  },
+  {
+   "id": 6,
+   "category": "paraphrase",
+   "question": "What makes the model easier to inspect and understand?",
+   "pages": [
+    7
+   ],
+   "evidence": "self-attention could yield more interpretable"
+  },
+  {
+   "id": 7,
+   "category": "paraphrase",
+   "question": "Under what condition is attention cheaper than a recurrent layer?",
+   "pages": [
+    6
+   ],
+   "evidence": "self-attention layers are faster than"
+  },
+  {
+   "id": 8,
+   "category": "paraphrase",
+   "question": "What ability does attending in parallel give that one head lacks?",
+   "pages": [
+    5
+   ],
+   "evidence": "jointly attend to information from different"
+  },
+  {
+   "id": 9,
+   "category": "paraphrase",
+   "question": "Do the input and output word tables share parameters?",
+   "pages": [
+    5
+   ],
+   "evidence": "we share the same weight matrix between"
+  },
+  {
+   "id": 10,
+   "category": "paraphrase",
+   "question": "What settings does the Adam optimiser run with?",
+   "pages": [
+    7
+   ],
+   "evidence": "β1 = 0.9, β2 = 0.98 and"
+  },
+  {
+   "id": 11,
+   "category": "number",
+   "question": "How many warmup steps does the schedule use?",
+   "pages": [
+    7
+   ],
+   "evidence": "warmup_steps = 4000"
+  },
+  {
+   "id": 12,
+   "category": "number",
+   "question": "Roughly how many source tokens are in each training batch?",
+   "pages": [
+    7
+   ],
+   "evidence": "approximately 25000 source tokens"
+  },
+  {
+   "id": 13,
+   "category": "number",
+   "question": "For how many steps were the big models trained?",
+   "pages": [
+    7
+   ],
+   "evidence": "The big models were trained for 300,000"
+  },
+  {
+   "id": 14,
+   "category": "number",
+   "question": "What is the value of the length penalty?",
+   "pages": [
+    8
+   ],
+   "evidence": "length penalty α = 0.6"
+  },
+  {
+   "id": 15,
+   "category": "number",
+   "question": "How many of the most recent checkpoints were averaged for the base models?",
+   "pages": [
+    8
+   ],
+   "evidence": "averaging the last 5 checkpoints"
+  },
+  {
+   "id": 16,
+   "category": "number",
+   "question": "What is the size of the inner feed-forward layer?",
+   "pages": [
+    5
+   ],
+   "evidence": "dff = 2048"
+  },
+  {
+   "id": 17,
+   "category": "number",
+   "question": "What vocabulary size was used for English-French?",
+   "pages": [
+    7
+   ],
+   "evidence": "32000 word-piece vocabulary"
+  },
+  {
+   "id": 18,
+   "category": "entity",
+   "question": "Which author is from the University of Toronto?",
+   "pages": [
+    1
+   ],
+   "evidence": "University of Toronto"
+  },
+  {
+   "id": 19,
+   "category": "entity",
+   "question": "Who wrote the Xception paper that is cited?",
+   "pages": [
+    11
+   ],
+   "evidence": "Francois Chollet. Xception"
+  },
+  {
+   "id": 20,
+   "category": "entity",
+   "question": "Which earlier translation system used reinforcement learning, per the results table?",
+   "pages": [
+    8
+   ],
+   "evidence": "GNMT + RL Ensemble [38]"
+  },
+  {
+   "id": 21,
+   "category": "entity",
+   "question": "What kind of GPUs were the models trained on?",
+   "pages": [
+    7
+   ],
+   "evidence": "8 NVIDIA P100 GPUs"
+  },
+  {
+   "id": 22,
+   "category": "table",
+   "question": "What BLEU scores does the big Transformer reach on EN-DE and EN-FR?",
+   "pages": [
+    8
+   ],
+   "evidence": "Transformer (big) 28.4 41.8"
+  },
+  {
+   "id": 23,
+   "category": "table",
+   "question": "What is the per-layer complexity of a convolutional layer?",
+   "pages": [
+    6
+   ],
+   "evidence": "Convolutional O(k · n · d2)"
+  },
+  {
+   "id": 24,
+   "category": "table",
+   "question": "What are the complexity, sequential operations and path length of a recurrent layer?",
+   "pages": [
+    6
+   ],
+   "evidence": "Recurrent O(n · d2) O(n) O(n)"
+  },
+  {
+   "id": 25,
+   "category": "table",
+   "question": "What dev BLEU and perplexity does the big configuration get in the variations table?",
+   "pages": [
+    9
+   ],
+   "evidence": "big 6 1024 4096 16 0.3 300K 4.33 26.4"
+  },
+  {
+   "id": 26,
+   "category": "table",
+   "question": "What happens in the ablation with a single attention head?",
+   "pages": [
+    9
+   ],
+   "evidence": "(A) 1 512 512 5.29 24.9"
+  },
+  {
+   "id": 27,
+   "category": "table",
+   "question": "How much did the Deep-Att ensemble cost to train for English-French?",
+   "pages": [
+    8
+   ],
+   "evidence": "Deep-Att + PosUnk Ensemble [39]"
+  },
+  {
+   "id": 28,
+   "category": "short",
+   "question": "Dropout rate?",
+   "pages": [
+    8
+   ],
+   "evidence": "we use a rate of Pdrop = 0.1"
+  },
+  {
+   "id": 29,
+   "category": "short",
+   "question": "Beam size?",
+   "pages": [
+    8
+   ],
+   "evidence": "beam size of 4"
+  },
+  {
+   "id": 30,
+   "category": "short",
+   "question": "Positional encoding",
+   "pages": [
+    6
+   ],
+   "evidence": "we use sine and cosine functions of"
+  },
+  {
+   "id": 31,
+   "category": "short",
+   "question": "Number of heads?",
+   "pages": [
+    5
+   ],
+   "evidence": "we employ h = 8 parallel attention layers"
+  },
+  {
+   "id": 32,
+   "category": "short",
+   "question": "Optimizer?",
+   "pages": [
+    7
+   ],
+   "evidence": "We used the Adam optimizer"
+  },
+  {
+   "id": 33,
+   "category": "short",
+   "question": "Label smoothing?",
+   "pages": [
+    8
+   ],
+   "evidence": "label smoothing of value"
+  },
+  {
+   "id": 34,
+   "category": "short",
+   "question": "Training hardware?",
+   "pages": [
+    7
+   ],
+   "evidence": "one machine with 8 NVIDIA P100 GPUs"
+  },
+  {
+   "id": 35,
+   "category": "cross-page",
+   "question": "How is multi-head attention built and what dimensions does each head get?",
+   "pages": [
+    4,
+    5
+   ],
+   "evidence": [
+    "we found it beneficial to linearly project",
+    "dk = dv = dmodel/h = 64"
+   ],
+   "mode": "all"
+  },
+  {
+   "id": 36,
+   "category": "cross-page",
+   "question": "What regularisation is used, and what dropout did the big English-French model use?",
+   "pages": [
+    7,
+    8
+   ],
+   "evidence": [
+    "We employ three types of regularization",
+    "dropout rate Pdrop = 0.1, instead of 0.3"
+   ],
+   "mode": "all"
+  },
+  {
+   "id": 37,
+   "category": "cross-page",
+   "question": "What did the big model score on English-German and how long did it take to train?",
+   "pages": [
+    7,
+    8
+   ],
+   "evidence": [
+    "The big models were trained for 300,000",
+    "new state-of-the-art BLEU score of 28.4"
+   ],
+   "mode": "all"
+  }
+ ]
+}
