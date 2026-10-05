@@ -1,13 +1,13 @@
 """Load several document types into the same page-aware shape the pipeline
 expects: a list of (page_number, page_text) pairs, 1-indexed.
 
-PDFs keep their real pages (with an OCR fallback -- see pdf_loader). Plain
+PDFs keep their real pages (with per-page OCR -- see pdf_loader). Plain
 text, Markdown and Word documents have no fixed pages, so they are split into
 even "pages" of roughly PSEUDO_PAGE_CHARS on paragraph boundaries, which keeps
 citations ("Page 3") meaningful without pretending a precision they don't have.
 """
 
-from pdf_loader import load_pdf_pages
+from pdf_loader import LoadResult, load_pdf
 
 SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md", ".markdown", ".docx")
 PSEUDO_PAGE_CHARS = 2500
@@ -17,17 +17,23 @@ def is_supported(filename: str) -> bool:
     return filename.lower().endswith(SUPPORTED_EXTENSIONS)
 
 
-def load_document(filename: str, data: bytes) -> list[tuple[int, str]]:
-    """Extract (page, text) pairs from a supported document. Returns [] for an
-    unreadable, empty or unsupported file rather than raising."""
+def load_document_ex(filename: str, data: bytes) -> LoadResult:
+    """Extract (page, text) pairs from a supported document, plus warnings about
+    anything that could not be read (see pdf_loader). An unreadable, empty or
+    unsupported file gives an empty result rather than raising."""
     name = (filename or "").lower()
     if name.endswith(".pdf"):
-        return load_pdf_pages(data)
+        return load_pdf(data)
     if name.endswith(".docx"):
-        return _paginate(_load_docx(data))
+        return LoadResult(_paginate(_load_docx(data)))
     if name.endswith((".txt", ".md", ".markdown")):
-        return _paginate(_load_text(data))
-    return []
+        return LoadResult(_paginate(_load_text(data)))
+    return LoadResult()
+
+
+def load_document(filename: str, data: bytes) -> list[tuple[int, str]]:
+    """Just the (page, text) pairs of `load_document_ex`."""
+    return load_document_ex(filename, data).pages
 
 
 def _load_text(data: bytes) -> list[str]:
