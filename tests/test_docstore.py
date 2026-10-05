@@ -167,15 +167,17 @@ def test_delete_removes_metadata_and_artifacts(repo):
     run(go())
 
 
-def test_delete_all_removes_documents_and_history(repo):
+def test_delete_all_removes_documents_but_keeps_saved_chats(repo):
     async def go():
         owner = docstore.owner_key("uid-1")
         await repo.save(owner, packed("d1"))
         await repo.save(owner, packed("d2"))
-        await repo.set_history(owner, [{"question": "q", "answer": "a"}])
+        chat = await repo.create_chat(owner, "About planets")
+        await repo.save_chat_turns(owner, chat, [{"question": "q", "answer": "a"}])
         await repo.delete_all(owner)
         assert await repo.list_docs(owner) == {}
-        assert await repo.get_history(owner) == []
+        assert [c["title"] for c in await repo.list_chats(owner)] == ["About planets"]  # chats are the user's to delete
+        assert await repo.get_chat_history(owner, chat["id"]) == [{"question": "q", "answer": "a"}]
 
     run(go())
 

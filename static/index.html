@@ -32,7 +32,7 @@
       </a>
       <button type="button" class="pill-link signin-link" id="signin-link" hidden>
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3" /></svg>
-        <span>Sign in with Google</span>
+        <span>Log in</span>
       </button>
       <div class="user-chip" id="user-chip" hidden>
         <span class="user-avatar" id="user-avatar" aria-hidden="true"></span>
@@ -52,6 +52,19 @@
   </header>
 
   <div class="layout">
+    <!-- Saved chats (signed-in users only) -->
+    <aside class="chats" id="chats-panel" aria-label="Your chats" hidden>
+      <div class="chats-head">
+        <h2 class="shelf-title">Chats</h2>
+        <button type="button" class="btn btn-primary btn-xs" id="new-chat-btn">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          New chat
+        </button>
+      </div>
+      <ul class="chat-list" id="chat-list" aria-label="Chat history"></ul>
+      <p class="chat-empty" id="chat-empty" hidden>No chats yet. Ask a question and it will be saved here.</p>
+    </aside>
+
     <!-- Documents in this session (shown once at least one is loaded) -->
     <aside class="shelf" aria-label="Your documents">
       <div class="shelf-head">
@@ -110,7 +123,7 @@
         <input id="file-input" type="file" accept="application/pdf,.txt,.md,.markdown,.docx" hidden />
         <p id="guest-note" class="guest-note" hidden>
           <strong>Guest mode:</strong> <span id="guest-limits"></span>
-          <button type="button" class="link-button" id="guest-signin">Sign in with Google</button> for more.
+          <button type="button" class="link-button" id="guest-signin">Log in</button> for more.
         </p>
         <p id="upload-error" class="error-text" role="alert" hidden></p>
         <ul class="features" aria-label="What you get">
@@ -195,6 +208,26 @@
   </footer>
 
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+  <dialog id="signin-dialog" class="dialog signin-dialog" aria-labelledby="signin-title">
+    <span class="signin-logo" aria-hidden="true">
+      <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8" class="logo-bg" /><path d="M10 8h8l5 5v11H10z" class="logo-page" /><rect x="13" y="16" width="7" height="2.4" rx="1" class="logo-mark" /></svg>
+    </span>
+    <h2 id="signin-title">Log in to DocuLens</h2>
+    <p class="signin-lead">Keep your documents and every conversation, and get higher daily limits.</p>
+    <ul class="signin-perks">
+      <li>Chats saved in your sidebar, like you left them</li>
+      <li>Documents kept for 30 days, on any device</li>
+      <li>200 questions a day instead of 5</li>
+    </ul>
+    <button type="button" class="btn-google" id="google-btn">
+      <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      <span>Continue with Google</span>
+    </button>
+    <p id="signin-error" class="error-text" role="alert" hidden></p>
+    <p class="signin-fine">We use your Google name and e-mail only to sign you in. Your documents stay private to your account.</p>
+    <form method="dialog" class="signin-close"><button class="btn btn-ghost" type="submit">Not now</button></form>
+  </dialog>
 
   <dialog id="privacy-dialog" class="dialog" aria-labelledby="privacy-title">
     <h2 id="privacy-title">Privacy</h2>

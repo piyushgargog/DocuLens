@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -471,24 +471,32 @@ def _owner_of(session: Session) -> str:
     return session.owner
 
 
-async def _history(session: Session) -> list[dict]:
+async def _history(session: Session, chat_id: str | None = None) -> list[dict]:
+    """The turns of the conversation being continued: a signed-in user's saved chat
+    (empty for a new one), or a guest's in-memory conversation."""
     if session.owner:
-        return await _repo().get_history(session.owner)
+        return await _repo().get_chat_history(session.owner, chat_id) if chat_id else []
     with session.lock:
         return list(session.history)
 
 
-async def _record_turn(session: Session, turn: dict, history: list[dict] | None = None) -> None:
-    """Add a turn to the conversation. `history` is the list already read for this
-    request, so a signed-in user's write is one round trip, not read-then-write."""
+async def _record_turn(
+    session: Session, turn: dict, history: list[dict] | None = None, chat: dict | None = None
+) -> dict | None:
+    """Add a turn to the conversation. A signed-in user's turn goes into their chat,
+    which is created from the question if this is a new one (the chat is returned so
+    the browser can show it); `history` is what was already read, so it is one write.
+    Returns the chat for a signed-in user, None for a guest."""
     if session.owner:
-        turns = list(history) if history is not None else await _repo().get_history(session.owner)
-        turns.append(turn)
-        await _repo().set_history(session.owner, turns[-MAX_STORED_TURNS:])
-        return
+        owner = session.owner
+        if chat is None:
+            chat = await _repo().create_chat(owner, turn["question"])
+        await _repo().save_chat_turns(owner, chat, [*(history or []), turn])
+        return chat
     with session.lock:
         session.history.append(turn)
         del session.history[:-MAX_STORED_TURNS]
+    return None
 
 
 def _client_ip(request: Request) -> str:
@@ -665,9 +673,13 @@ async def _json_body(request: Request) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-async def _question_request(request: Request, session: Session | None) -> tuple[Session, str, list] | JSONResponse:
-    """Validate an ask request: a session with documents, a question, and an
-    optional `doc_ids` list choosing which of the session's documents to search."""
+async def _question_request(
+    request: Request, session: Session | None
+) -> tuple[Session, str, list, dict | None] | JSONResponse:
+    """Validate an ask request: a session with documents, a question, an optional
+    `doc_ids` list choosing which of the session's documents to search and, for a
+    signed-in user, an optional `chat_id` to continue (it must be one of their chats).
+    Returns (session, question, states, chat); `chat` is None for a new conversation."""
     if session is None:
         return _error("No document is loaded. Please upload a PDF first.", 400)
 
@@ -698,7 +710,13 @@ async def _question_request(request: Request, session: Session | None) -> tuple[
         return _restore_failure(e)
     if problem := _lost_documents_error(lost):
         return problem
-    return session, question, states
+    chat = None
+    chat_id = body.get("chat_id")
+    if session.owner and chat_id is not None:
+        chat = await _repo().get_chat(session.owner, chat_id) if isinstance(chat_id, str) else None
+        if chat is None:
+            return _error("That chat was not found.", 404)
+    return session, question, states, chat
 
 
 def _sse(event: str, data) -> str:
@@ -746,7 +764,7 @@ def _clean_filename(raw: str | None) -> str:
     name = re.sub(
         r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]",
         "",
-        Path((raw or "").replace("\\", "/")).name,
+        PurePosixPath((raw or "").replace("\\", "/")).name,
     ).strip()
     if name in (".", ".."):
         name = ""  # a bare traversal component is not a name
@@ -955,7 +973,7 @@ async def get_session(request: Request):
     session = await _get_session(request)
     if session is None:
         return {"documents": [], "history": []}
-    return {"documents": _documents(session), "history": await _history(session)}
+    return {"documents": _documents(session), "history": await _history(session)}  # (a signed-in user's chats: /api/chats)
 
 
 def _turn(question: str, answer: str, by: dict | None) -> dict:
@@ -990,8 +1008,10 @@ async def ask(request: Request):
     checked = await _question_request(request, session)
     if isinstance(checked, JSONResponse):
         return checked
-    session, question, states = checked
-    quota, history = await asyncio.gather(_quota_limited(request, await _tier(request), "ask"), _history(session))
+    session, question, states, chat = checked
+    quota, history = await asyncio.gather(
+        _quota_limited(request, await _tier(request), "ask"), _history(session, chat["id"] if chat else None)
+    )
     if quota:
         return quota
 
@@ -1005,8 +1025,13 @@ async def ask(request: Request):
         _llm_slots.release()
 
     by = answered_by(result["answer"])
-    await _record_turn(session, _turn(question, result["answer"], by), history)
-    return {"answer": result["answer"], "sources": result["sources"], "answered_by": by}
+    saved_chat = await _record_turn(session, _turn(question, result["answer"], by), history, chat)
+    return {
+        "answer": result["answer"],
+        "sources": result["sources"],
+        "answered_by": by,
+        **({"chat": saved_chat} if saved_chat else {}),
+    }
 
 
 @app.post("/api/ask/stream")
@@ -1030,8 +1055,10 @@ async def ask_stream(request: Request):
     checked = await _question_request(request, session)
     if isinstance(checked, JSONResponse):
         return checked
-    session, question, states = checked
-    quota, history = await asyncio.gather(_quota_limited(request, await _tier(request), "ask"), _history(session))
+    session, question, states, chat = checked
+    quota, history = await asyncio.gather(
+        _quota_limited(request, await _tier(request), "ask"), _history(session, chat["id"] if chat else None)
+    )
     if quota:
         return quota
 
@@ -1080,7 +1107,9 @@ async def ask_stream(request: Request):
             completed = True
             answer = "".join(parts)
             yield _sse("done", {})  # the answer is complete: tell the browser first,
-            await _record_turn(session, _turn(question, answer, route or None), history)  # then save the turn
+            saved_chat = await _record_turn(session, _turn(question, answer, route or None), history, chat)  # then save it
+            if saved_chat and chat is None:
+                yield _sse("chat", saved_chat)  # a new chat was created: the sidebar can list it
         except Exception as e:
             reference = secrets.token_hex(4)
             log.error("[%s] Error while streaming an answer: %r", reference, e)
@@ -1174,8 +1203,8 @@ async def suggestions(request: Request):
 @app.post("/api/remove")
 async def remove(request: Request):
     """Remove one document (body {"id": ...}) or, with no id, everything.
-    For a signed-in user this deletes the stored copy too: metadata, both
-    artifacts and (once nothing is left) the conversation."""
+    For a signed-in user this deletes the stored copy too: metadata and all
+    artifacts. Saved chats are kept."""
     doc_id = (await _json_body(request)).get("id")
 
     user = await _current_user(request)
@@ -1191,8 +1220,6 @@ async def remove(request: Request):
             with session.lock:
                 session.meta.pop(doc_id, None)
                 session.docs.pop(doc_id, None)
-            if not _doc_count(session):
-                await _repo().clear_history(_owner_of(session))
         return {"ok": True, "documents": _documents(session)}
 
     session_id = request.cookies.get(_cookie_name(request), "")
@@ -1246,9 +1273,81 @@ async def _adopt_guest_documents(request: Request, uid: str) -> bool:
             session.docs[doc_id] = state
             session.meta[doc_id] = saved
     if turns and _doc_count(session):
-        await _repo().set_history(_owner_of(session), turns)
+        try:
+            await _repo().import_turns(_owner_of(session), turns, "Chat from before you signed in")
+        except docstore.ChatLimitError:
+            pass
     _sessions.pop(request.cookies.get(_cookie_name(request), ""), None)
     return True
+
+
+async def _signed_in_workspace(request: Request) -> Session | JSONResponse:
+    """The signed-in user's workspace, or the 401 for everyone else (chats are saved per account)."""
+    user = await _current_user(request)
+    if not user:
+        return _error("Sign in to use saved chats.", 401)
+    return await _user_session(user["sub"])
+
+
+@app.get("/api/chats")
+async def list_chats(request: Request):
+    """The signed-in user's saved chats, most recent first."""
+    session = await _signed_in_workspace(request)
+    if isinstance(session, JSONResponse):
+        return session
+    owner = _owner_of(session)
+    await _repo().migrate_legacy_history(owner)
+    return {"chats": await _repo().list_chats(owner)}
+
+
+@app.post("/api/chats")
+async def new_chat(request: Request):
+    """Create an empty chat (the browser usually lets the first question create it)."""
+    session = await _signed_in_workspace(request)
+    if isinstance(session, JSONResponse):
+        return session
+    title = (await _json_body(request)).get("title")
+    try:
+        chat = await _repo().create_chat(_owner_of(session), title if isinstance(title, str) else "New chat")
+    except docstore.ChatLimitError as e:
+        return _error(str(e), 400)
+    return {"chat": chat}
+
+
+@app.get("/api/chat")
+async def open_chat(request: Request, id: str = ""):
+    """One saved chat with its turns."""
+    session = await _signed_in_workspace(request)
+    if isinstance(session, JSONResponse):
+        return session
+    chat = await _repo().get_chat(_owner_of(session), id)
+    if chat is None:
+        return _error("That chat was not found.", 404)
+    return {"chat": chat, "history": await _repo().get_chat_history(_owner_of(session), chat["id"])}
+
+
+@app.post("/api/chats/rename")
+async def rename_chat(request: Request):
+    session = await _signed_in_workspace(request)
+    if isinstance(session, JSONResponse):
+        return session
+    body = await _json_body(request)
+    chat_id, title = body.get("id"), body.get("title")
+    if not isinstance(chat_id, str) or not isinstance(title, str) or not title.strip():
+        return _error("Give the chat a name.", 400)
+    chat = await _repo().rename_chat(_owner_of(session), chat_id, title)
+    return {"chat": chat} if chat else _error("That chat was not found.", 404)
+
+
+@app.post("/api/chats/delete")
+async def delete_chat(request: Request):
+    session = await _signed_in_workspace(request)
+    if isinstance(session, JSONResponse):
+        return session
+    chat_id = (await _json_body(request)).get("id")
+    if not isinstance(chat_id, str) or not await _repo().delete_chat(_owner_of(session), chat_id):
+        return _error("That chat was not found.", 404)
+    return {"ok": True}
 
 
 @app.post("/api/login")

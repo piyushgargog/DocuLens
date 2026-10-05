@@ -27,6 +27,8 @@ import hashlib
 import hmac
 import json
 import os
+import re
+import secrets
 import time
 import zlib
 from dataclasses import asdict, dataclass
@@ -41,7 +43,10 @@ from observability import log
 FORMAT_VERSION = 1
 BLOB_PART_BYTES = 400_000  # Upstash caps a request at 1 MB; stay well under
 MAX_UNPACKED_BYTES = 64 * 1024 * 1024  # decompression-bomb guard for the chunk blob
-MAX_HISTORY_TURNS_STORED = 10
+MAX_HISTORY_TURNS_STORED = 10  # the older single-conversation history (migrated into a chat)
+MAX_TURNS_PER_CHAT = 40  # turns kept in a saved chat (only the last few reach the model)
+MAX_TITLE_CHARS = 80
+CHAT_ID_RE = re.compile(r"[A-Za-z0-9_-]{8,24}")
 
 
 class DocumentMissingError(Exception):
@@ -56,6 +61,10 @@ class StorageQuotaError(Exception):
     """Saving this document would exceed the user's storage allowance."""
 
 
+class ChatLimitError(Exception):
+    """The user already has the maximum number of saved chats."""
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return max(1, int(os.environ.get(name, default)))
@@ -65,6 +74,10 @@ def _env_int(name: str, default: int) -> int:
 
 def retention_seconds() -> int:
     return _env_int("DOC_RETENTION_DAYS", 30) * 24 * 3600
+
+
+def max_chats() -> int:
+    return _env_int("MAX_CHATS_PER_USER", 100)
 
 
 def max_user_bytes() -> int:
@@ -318,6 +331,14 @@ class DocumentRepository:
         return f"u:{owner}:hist"
 
     @staticmethod
+    def _chats_key(owner: str) -> str:
+        return f"u:{owner}:chats"
+
+    @staticmethod
+    def _chat_hist_key(owner: str, chat_id: str) -> str:
+        return f"u:{owner}:c:{chat_id}"
+
+    @staticmethod
     def _blob_key(owner: str, doc_id: str, kind: str) -> str:
         return f"a:{owner}:{doc_id}:{kind}"
 
@@ -393,9 +414,116 @@ class DocumentRepository:
         await asyncio.gather(*(self._artifacts.delete(self._blob_key(owner, doc_id, kind)) for kind in ("chunks", "emb", "index")))
 
     async def delete_all(self, owner: str) -> None:
-        """Remove every document and the conversation."""
+        """Remove every document. Saved chats are kept: they are the user's to delete."""
         for doc_id in list((await self._store.hgetall_json(self._docs_key(owner))).keys()):
             await self.delete(owner, doc_id)
+
+    # ---------- chats: saved conversations ----------
+    #
+    # A chat is a titled conversation. Its metadata lives in the hash `u:<owner>:chats`
+    # (one field per chat, so two instances never overwrite each other) and its turns in
+    # `u:<owner>:c:<id>`. Chats are separate from documents: a user's documents are a
+    # library, and any chat can ask about any of them. Chat ids are random and only ever
+    # looked up inside the caller's own hash, so an id from the browser authorises nothing.
+
+    @staticmethod
+    def clean_title(text: str) -> str:
+        """A one-line title from a question: no control characters, collapsed spaces, bounded."""
+        title = re.sub(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]", " ", str(text))
+        title = re.sub(r"\s+", " ", title).strip()
+        if len(title) > MAX_TITLE_CHARS:
+            title = title[: MAX_TITLE_CHARS - 1].rstrip() + "\u2026"
+        return title or "New chat"
+
+    async def list_chats(self, owner: str) -> list[dict]:
+        """The user's chats, most recently active first. Malformed entries are dropped."""
+        raw = await self._store.hgetall_json(self._chats_key(owner))
+        chats = []
+        for chat_id, meta in raw.items():
+            if (
+                isinstance(meta, dict)
+                and meta.get("id") == chat_id
+                and CHAT_ID_RE.fullmatch(chat_id)
+                and isinstance(meta.get("title"), str)
+                and isinstance(meta.get("updated"), (int, float))
+            ):
+                chats.append({"id": chat_id, "title": meta["title"], "created": meta.get("created", meta["updated"]), "updated": meta["updated"]})
+            else:
+                await self._store.hdel(self._chats_key(owner), chat_id)
+        return sorted(chats, key=lambda c: c["updated"], reverse=True)
+
+    async def get_chat(self, owner: str, chat_id: str) -> dict | None:
+        """One chat's metadata, or None if the id is malformed or not this user's."""
+        if not isinstance(chat_id, str) or not CHAT_ID_RE.fullmatch(chat_id):
+            return None
+        for chat in await self.list_chats(owner):
+            if chat["id"] == chat_id:
+                return chat
+        return None
+
+    async def create_chat(self, owner: str, title: str, existing: int | None = None) -> dict:
+        """A new empty chat. Raises ChatLimitError when the user already has MAX_CHATS."""
+        count = existing if existing is not None else len(await self.list_chats(owner))
+        if count >= max_chats():
+            raise ChatLimitError(f"You can keep up to {max_chats()} chats. Delete one first.")
+        now = time.time()
+        chat = {"id": secrets.token_urlsafe(9)[:12], "title": self.clean_title(title), "created": now, "updated": now}
+        await self._store.hset_json(self._chats_key(owner), chat["id"], chat, retention_seconds())
+        return chat
+
+    async def get_chat_history(self, owner: str, chat_id: str) -> list[dict]:
+        if not CHAT_ID_RE.fullmatch(chat_id):
+            return []
+        turns = await self._store.get_json(self._chat_hist_key(owner, chat_id))
+        if not isinstance(turns, list):
+            return []
+        return [t for t in turns if isinstance(t, dict) and isinstance(t.get("question"), str) and isinstance(t.get("answer"), str)]
+
+    async def save_chat_turns(self, owner: str, chat: dict, turns: list[dict]) -> None:
+        """Store a chat's turns (bounded) and mark it as just used."""
+        ttl = retention_seconds()
+        await asyncio.gather(
+            self._store.set_json(self._chat_hist_key(owner, chat["id"]), turns[-MAX_TURNS_PER_CHAT:], ttl),
+            self._store.hset_json(self._chats_key(owner), chat["id"], {**chat, "updated": time.time()}, ttl),
+        )
+
+    async def rename_chat(self, owner: str, chat_id: str, title: str) -> dict | None:
+        chat = await self.get_chat(owner, chat_id)
+        if chat is None:
+            return None
+        chat = {**chat, "title": self.clean_title(title)}
+        await self._store.hset_json(self._chats_key(owner), chat_id, chat, retention_seconds())
+        return chat
+
+    async def delete_chat(self, owner: str, chat_id: str) -> bool:
+        if await self.get_chat(owner, chat_id) is None:
+            return False
+        await self._store.hdel(self._chats_key(owner), chat_id)
+        await self._store.delete(self._chat_hist_key(owner, chat_id))
+        return True
+
+    async def delete_all_chats(self, owner: str) -> None:
+        for chat in await self.list_chats(owner):
+            await self.delete_chat(owner, chat["id"])
+
+    async def import_turns(self, owner: str, turns: list[dict], title: str) -> dict | None:
+        """Make a chat out of turns that had no chat yet (a guest's conversation, or the
+        single-history format of earlier versions). None if there is nothing to import."""
+        if not turns:
+            return None
+        chat = await self.create_chat(owner, title)
+        await self.save_chat_turns(owner, chat, turns)
+        return chat
+
+    async def migrate_legacy_history(self, owner: str) -> None:
+        """Earlier versions kept one conversation per user (`u:<owner>:hist`); move it into a chat once."""
+        turns = await self.get_history(owner)
+        if not turns:
+            return
+        try:
+            await self.import_turns(owner, turns, "Earlier conversation")
+        except ChatLimitError:
+            return
         await self._store.delete(self._hist_key(owner))
 
     async def get_history(self, owner: str) -> list[dict]:

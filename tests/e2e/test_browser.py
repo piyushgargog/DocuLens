@@ -153,6 +153,7 @@ def test_guest_sees_limits_and_a_sign_in_button(server, make_page):
 def test_signed_in_user_sees_a_chip_and_saved_note(server, make_page):
     page, errors = make_page()
     fake_me(page, USER_ME)
+    page.route("**/api/chats", lambda r: r.fulfill(status=200, content_type="application/json", body='{"chats": []}'))
     page.goto(server)
     page.locator("#user-chip:not([hidden])").wait_for()
     assert page.locator("#user-name").inner_text() == "Ada Lovelace"
@@ -234,3 +235,90 @@ def test_documents_the_server_could_not_restore_are_refreshed_away(server, make_
     page.locator("#upload-view").wait_for(state="visible")
     assert page.locator("#doc-list .doc-item").count() == 0
     assert all("409" in e or "Failed to load resource" in e for e in errors)  # the browser logs the 409 itself; nothing else
+
+
+# ---------- v4: log-in dialog and saved chats ----------
+
+CHATS = [
+    {"id": "chatAAAAAAAA", "title": "How many attention heads?", "created": 1, "updated": 3},
+    {"id": "chatBBBBBBBB", "title": "Dropout settings", "created": 1, "updated": 2},
+]
+TURNS = {"chatAAAAAAAA": [{"question": "How many heads?", "answer": "Eight heads [Page 5]."}], "chatBBBBBBBB": [{"question": "Dropout?", "answer": "0.1 [Page 8]."}]}
+DOCS = [{"id": "d1", "filename": "paper.pdf", "num_pages": 15, "num_chunks": 66}]
+
+
+def fake_chats_api(page):
+    ok = lambda body: dict(status=200, content_type="application/json", body=json.dumps(body))  # noqa: E731
+    state = {"chats": list(CHATS), "deleted": [], "renamed": []}
+    page.route("**/api/session", lambda r: r.fulfill(**ok({"documents": DOCS, "history": []})))
+    page.route("**/api/suggestions", lambda r: r.fulfill(**ok({"questions": []})))
+    page.route("**/api/chats", lambda r: r.fulfill(**ok({"chats": state["chats"]})))
+    page.route("**/api/chat?*", lambda r: r.fulfill(**ok({"chat": CHATS[0], "history": TURNS[r.request.url.split("id=")[1]]})))
+
+    def rename(route):
+        body = json.loads(route.request.post_data)
+        state["renamed"].append(body)
+        route.fulfill(**ok({"chat": {**CHATS[0], "title": body["title"]}}))
+
+    def delete(route):
+        state["deleted"].append(json.loads(route.request.post_data)["id"])
+        route.fulfill(**ok({"ok": True}))
+
+    page.route("**/api/chats/rename", rename)
+    page.route("**/api/chats/delete", delete)
+    return state
+
+
+def test_login_opens_a_dialog_with_the_google_button(server, make_page):
+    page, errors = make_page()
+    fake_me(page, GUEST_ME)
+    page.goto(server)
+    page.locator("#signin-link:not([hidden])").wait_for()
+    page.click("#signin-link")
+    dialog = page.locator("#signin-dialog")
+    dialog.wait_for(state="visible")
+    assert "Continue with Google" in page.locator("#google-btn").inner_text() and "Log in to DocuLens" in dialog.inner_text()
+    page.get_by_role("button", name="Not now").click()
+    dialog.wait_for(state="hidden")
+    assert errors == []
+
+
+def test_signed_in_users_get_a_chat_sidebar_with_their_latest_chat_open(server, make_page):
+    page, errors = make_page()
+    fake_me(page, USER_ME)
+    state = fake_chats_api(page)
+    page.goto(server)
+    page.locator(".chat-item").first.wait_for()
+    assert page.locator(".chat-item").count() == 2
+    assert page.locator(".chat-item.active .chat-open").inner_text() == "How many attention heads?"
+    page.locator(".msg", has_text="Eight heads").first.wait_for()
+    page.locator(".chat-item", has_text="Dropout settings").locator(".chat-open").click()
+    page.locator(".msg", has_text="0.1").first.wait_for()
+    assert page.locator(".msg", has_text="Eight heads").count() == 0  # the other chat's turns are gone
+    page.click("#new-chat-btn")
+    page.locator(".msg-note", has_text="New chat").wait_for()
+    assert page.locator(".chat-item.active").count() == 0
+    assert errors == [] and state["deleted"] == []
+
+
+def test_a_chat_can_be_renamed_and_deleted_with_a_confirmation_click(server, make_page):
+    page, errors = make_page()
+    fake_me(page, USER_ME)
+    state = fake_chats_api(page)
+    page.goto(server)
+    page.locator(".chat-item").first.wait_for()
+    row = page.locator(".chat-item", has_text="Dropout settings")
+    row.hover()
+    row.get_by_role("button", name="Rename chat").click()
+    box = page.locator(".chat-rename")
+    box.fill("Regularisation")
+    box.press("Enter")
+    page.wait_for_function("() => true")
+    assert state["renamed"] == [{"id": "chatBBBBBBBB", "title": "Regularisation"}]
+    row = page.locator(".chat-item", has_text="Regularisation").or_(page.locator(".chat-item", has_text="Dropout settings"))
+    row.first.hover()
+    row.first.get_by_role("button", name="Delete chat").click()
+    assert state["deleted"] == []  # the first click only asks
+    row.first.locator(".chat-act.danger").click()
+    page.wait_for_function("() => document.querySelectorAll('.chat-item').length === 1")
+    assert state["deleted"] == ["chatBBBBBBBB"] and errors == []

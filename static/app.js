@@ -1002,6 +1002,15 @@ let activeStream = null; // AbortController of the answer being streamed
 // Question/answer pairs of this page view, for Export conversation.
 const transcript = [];
 
+// Saved chats (signed-in users): the list, and the one being shown. `currentChatId`
+// is null for a new conversation; the server creates the chat from the first question.
+let chats = [];
+let currentChatId = null;
+let resolveMe = () => {};
+const meReady = new Promise((resolve) => {
+  resolveMe = resolve;
+});
+
 function setBusy(on) {
   busy = on;
   document.body.classList.toggle("busy", on);
@@ -1059,6 +1068,7 @@ async function askQuestion(question, shown = question) {
   activeStream = controller;
   const body = { question };
   if (docIds.length < loadedDocs.length) body.doc_ids = docIds;
+  if (currentChatId) body.chat_id = currentChatId;
 
   let answer = null;
   let failed = null;
@@ -1084,6 +1094,7 @@ async function askQuestion(question, shown = question) {
       }
       failed = data.error || `The request failed (HTTP ${response.status}). Try again in a moment.`;
       if (response.status === 409) syncDocuments();
+      if (response.status === 404 && currentChatId) loadChats();  // the chat is gone (deleted elsewhere)
     } else {
       await readEvents(response, (name, data) => {
         if (name === "sources") {
@@ -1093,6 +1104,8 @@ async function askQuestion(question, shown = question) {
         } else if (name === "reasoning" && answer) {
           appendReasoning(answer, data.text);
           scrollToBottom();
+        } else if (name === "chat") {
+          upsertChat(data);
         } else if (name === "route" && answer) {
           answer.route = data;
         } else if (name === "token" && answer) {
@@ -1167,21 +1180,200 @@ questionInput.addEventListener("input", syncQuestionState);
 // Restore documents and conversation after a page reload (the session
 // cookie outlives the page). Sources aren't kept server-side, so restored
 // answers show their citations without the passage list.
-(async function restoreSession() {
-  const data = await api("/api/session");
-  if (data.error || !data.documents || data.documents.length === 0) return;
-  showView("chat");
-  renderDocuments(data.documents);
+/** Replace the conversation on screen with these turns (a saved chat, or a reload). */
+function renderConversation(history) {
+  messagesEl.replaceChildren();
+  transcript.length = 0;
   let lastQuestion = null;
-  for (const turn of data.history) {
+  for (const turn of history) {
     lastQuestion = addUser(turn.question);
     showAnswer(addNote(""), turn.answer, [], { route: turn.answered_by });
     transcript.push({ question: turn.question, answer: turn.answer, sources: [], route: turn.answered_by });
   }
   syncExport();
+  return lastQuestion;
+}
+
+(async function restoreSession() {
+  const [data, me] = await Promise.all([api("/api/session"), meReady]);
+  const docs = !data.error && data.documents ? data.documents : [];
+  if (docs.length) renderDocuments(docs);
+  if (me && me.user) {
+    // Signed in: the sidebar lists every saved chat; open the most recent one.
+    await loadChats();
+    if (chats.length && !busy) {
+      await openChat(chats[0].id, { quiet: true });
+      return;
+    }
+    if (docs.length) {
+      showView("chat");
+      addNote("Your documents are ready. Ask anything about them.");
+    }
+    return;
+  }
+  if (!docs.length) return;
+  showView("chat");
+  const lastQuestion = renderConversation(data.history || []);
   if (lastQuestion) scrollToStart(lastQuestion, false);
   else addNote("Your documents are still loaded. Ask anything about them.");
 })();
+
+// ---------- Saved chats ----------
+
+const chatsPanel = document.getElementById("chats-panel");
+const chatListEl = document.getElementById("chat-list");
+const chatEmpty = document.getElementById("chat-empty");
+
+async function loadChats() {
+  const data = await api("/api/chats");
+  if (data.error) return;
+  chats = data.chats || [];
+  renderChats();
+}
+
+function chatButton(label, title, className, svgPath) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = className;
+  b.title = title;
+  b.setAttribute("aria-label", title);
+  if (svgPath) {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", svgPath);
+    svg.appendChild(path);
+    b.appendChild(svg);
+  } else {
+    b.textContent = label;
+  }
+  return b;
+}
+
+function renderChats() {
+  chatListEl.replaceChildren();
+  chatEmpty.hidden = chats.length > 0;
+  for (const chat of chats) {
+    const li = document.createElement("li");
+    li.className = "chat-item" + (chat.id === currentChatId ? " active" : "");
+    const open = chatButton(chat.title, chat.title, "chat-open");
+    open.textContent = chat.title;
+    open.addEventListener("click", () => openChat(chat.id));
+    const actions = document.createElement("span");
+    actions.className = "chat-actions";
+    const rename = chatButton("", "Rename chat", "chat-act", "M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4");
+    const del = chatButton("", "Delete chat", "chat-act danger", "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3");
+    rename.addEventListener("click", () => startRename(li, chat));
+    del.addEventListener("click", () => confirmDelete(li, del, chat));
+    actions.append(rename, del);
+    li.append(open, actions);
+    chatListEl.appendChild(li);
+  }
+}
+
+function startRename(li, chat) {
+  const input = document.createElement("input");
+  input.className = "chat-rename";
+  input.value = chat.title;
+  input.maxLength = 80;
+  input.setAttribute("aria-label", "Chat name");
+  li.replaceChildren(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const title = input.value.trim();
+    if (save && title && title !== chat.title) {
+      const data = await api("/api/chats/rename", { id: chat.id, title });
+      if (data.error) showToast(data.error);
+      else chat.title = data.chat.title;
+    }
+    renderChats();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") finish(true);
+    else if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+function confirmDelete(li, button, chat) {
+  if (!li.classList.contains("confirming")) {
+    li.classList.add("confirming");
+    button.textContent = "Delete?";
+    button.title = "Click again to delete this chat";
+    setTimeout(() => {
+      if (li.isConnected && li.classList.contains("confirming")) renderChats();
+    }, 3500);
+    return;
+  }
+  deleteChat(chat);
+}
+
+async function deleteChat(chat) {
+  const data = await api("/api/chats/delete", { id: chat.id });
+  if (data.error) {
+    showToast(data.error);
+    return;
+  }
+  chats = chats.filter((c) => c.id !== chat.id);
+  if (chat.id === currentChatId) startNewChat();
+  else renderChats();
+  showToast("Chat deleted");
+}
+
+async function openChat(id, { quiet = false } = {}) {
+  if (busy) {
+    showToast("Wait for the answer to finish first.");
+    return;
+  }
+  const data = await api(`/api/chat?id=${encodeURIComponent(id)}`);
+  if (data.error) {
+    showToast(data.error);
+    await loadChats();
+    return;
+  }
+  currentChatId = data.chat.id;
+  showView("chat");
+  const lastQuestion = renderConversation(data.history);
+  if (loadedDocs.length === 0) addNote("Add a document to keep asking in this chat.");
+  if (lastQuestion) scrollToStart(lastQuestion, false);
+  renderChats();
+  if (!quiet) questionInput.focus();
+}
+
+/** A fresh conversation: nothing is saved until the first question is asked. */
+function startNewChat() {
+  if (busy) {
+    showToast("Wait for the answer to finish first.");
+    return;
+  }
+  currentChatId = null;
+  messagesEl.replaceChildren();
+  transcript.length = 0;
+  syncExport();
+  if (loadedDocs.length) {
+    showView("chat");
+    addNote("New chat. Ask anything about your documents.");
+    questionInput.focus();
+  } else {
+    showView("upload");
+  }
+  renderChats();
+}
+
+document.getElementById("new-chat-btn").addEventListener("click", startNewChat);
+
+/** A chat the server just created (or touched) goes to the top of the list. */
+function upsertChat(chat) {
+  currentChatId = chat.id;
+  chats = [chat, ...chats.filter((c) => c.id !== chat.id)];
+  renderChats();
+}
 
 // ---------- v2: stop, export, keyboard, drop anywhere ----------
 
@@ -1381,7 +1573,9 @@ const guestNote = document.getElementById("guest-note");
 
 async function refreshMe() {
   const me = await api("/api/me");
+  resolveMe(me.error ? null : me);
   if (me.error || !me.auth_enabled) return;
+  document.body.dataset.auth = me.user ? "user" : "guest";
   const shelfNote = document.getElementById("shelf-note");
   shelfNote.hidden = false;
   shelfNote.textContent = me.user ? "Saved to your account for up to 30 days." : "Guest session: not saved. Sign in to keep your documents.";
@@ -1392,6 +1586,7 @@ async function refreshMe() {
     document.getElementById("user-avatar").textContent = (me.user.name.trim()[0] || "?").toUpperCase();
     userChip.title = me.user.email;
     userChip.hidden = false;
+    chatsPanel.hidden = false;
   } else {
     userChip.hidden = true;
     signinLink.hidden = false;
@@ -1430,33 +1625,55 @@ function loadFirebaseSdk() {
   return firebaseLoading;
 }
 
+const signinDialog = document.getElementById("signin-dialog");
+const googleBtn = document.getElementById("google-btn");
+const signinError = document.getElementById("signin-error");
+
+function openSignin() {
+  signinError.hidden = true;
+  if (!signinDialog.open) signinDialog.showModal();
+  googleBtn.focus();
+}
+
 let signingIn = false;
 
 async function signIn() {
   if (signingIn || !firebaseConfig) return;
   signingIn = true;
-  signinLink.disabled = true;
+  googleBtn.disabled = true;
+  signinError.hidden = true;
+  const fail = (text) => {
+    signinError.textContent = text;
+    signinError.hidden = false;
+  };
   try {
     await loadFirebaseSdk();
     const idToken = await window.DocuLensFirebase.signIn(firebaseConfig);
     const result = await api("/api/login", { id_token: idToken });
     if (result.error) {
-      showToast(result.error);
+      fail(result.error);
       return;
     }
     location.reload();
   } catch (err) {
     const code = err && err.code;
     if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") return;
-    showToast(code === "auth/popup-blocked" ? "Allow pop-ups for this site to sign in." : "Couldn't sign you in. Please try again.");
+    fail(
+      code === "auth/popup-blocked"
+        ? "Your browser blocked the sign-in window. Allow pop-ups for this site and try again."
+        : code === "auth/unauthorized-domain"
+          ? "This address is not authorised for sign-in yet."
+          : "Couldn't sign you in. Please try again."
+    );
   } finally {
     signingIn = false;
-    signinLink.disabled = false;
+    googleBtn.disabled = false;
   }
 }
 
-signinLink.addEventListener("click", signIn);
-document.getElementById("guest-signin").addEventListener("click", signIn);
+signinLink.addEventListener("click", openSignin);
+document.getElementById("guest-signin").addEventListener("click", openSignin);
+googleBtn.addEventListener("click", signIn);
 
 refreshMe();
 

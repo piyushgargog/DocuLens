@@ -108,13 +108,13 @@ def test_restored_document_ranks_like_the_original(alice, monkeypatch):
     assert before == after
 
 
-def test_conversation_survives_a_restart(alice, seen_states):
+def test_a_chat_survives_a_restart_and_can_be_continued(alice, seen_states):
     alice.post("/api/ingest", files=PLANETS)
-    alice.post("/api/ask", json={"question": "first?"})
+    chat = alice.post("/api/ask", json={"question": "first?"}).json()["chat"]
     restart()
-    history = alice.get("/api/session").json()["history"]
-    assert [t["question"] for t in history] == ["first?"]
-    alice.post("/api/ask", json={"question": "second?"})
+    assert [c["title"] for c in alice.get("/api/chats").json()["chats"]] == ["first?"]
+    assert [t["question"] for t in alice.get(f"/api/chat?id={chat['id']}").json()["history"]] == ["first?"]
+    alice.post("/api/ask", json={"question": "second?", "chat_id": chat["id"]})
     assert [t["question"] for t in seen_states[-1]["history"]] == ["first?"]
 
 
@@ -141,7 +141,9 @@ def test_guest_document_is_adopted_on_sign_in(signin_on, seen_states):
         assert client.post("/api/login", json={"id_token": make_token(sub="carol", email="c@example.com", name="Carol")}).status_code == 200
         assert [d["filename"] for d in client.get("/api/session").json()["documents"]] == ["planets.txt"]
         assert len(stored_meta("carol")) == 1
-        assert [t["question"] for t in client.get("/api/session").json()["history"]] == ["as a guest?"]
+        chats = client.get("/api/chats").json()["chats"]
+        assert [c["title"] for c in chats] == ["Chat from before you signed in"]
+        assert [t["question"] for t in client.get(f"/api/chat?id={chats[0]['id']}").json()["history"]] == ["as a guest?"]
         restart()
         assert [d["filename"] for d in client.get("/api/session").json()["documents"]] == ["planets.txt"]
         assert len(main._sessions) == 0  # the guest session was retired
@@ -242,21 +244,14 @@ def test_removing_a_document_deletes_all_of_its_state(alice):
     assert [d["filename"] for d in alice.get("/api/session").json()["documents"]] == ["moons.txt"]
 
 
-def test_removing_everything_clears_documents_artifacts_and_conversation(alice, seen_states):
+def test_removing_everything_clears_documents_and_artifacts_but_keeps_chats(alice, seen_states):
     alice.post("/api/ingest", files=PLANETS)
     alice.post("/api/ask", json={"question": "q?"})
     assert alice.post("/api/remove", json={}).json() == {"ok": True, "documents": []}
     assert stored_meta("alice") == {} and stored_blob_keys() == []
-    assert not any(k.startswith("u:") and k.endswith(":hist") for k in main._store._values)
     restart()
-    assert alice.get("/api/session").json() == {"documents": [], "history": []}
-
-
-def test_removing_the_last_document_clears_the_conversation(alice, seen_states):
-    only = alice.post("/api/ingest", files=PLANETS).json()["id"]
-    alice.post("/api/ask", json={"question": "q?"})
-    alice.post("/api/remove", json={"id": only})
-    assert alice.get("/api/session").json() == {"documents": [], "history": []}
+    assert alice.get("/api/session").json()["documents"] == []
+    assert [c["title"] for c in alice.get("/api/chats").json()["chats"]] == ["q?"]
 
 
 def test_removing_an_unknown_id_changes_nothing(alice):
