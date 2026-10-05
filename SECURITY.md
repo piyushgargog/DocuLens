@@ -16,11 +16,15 @@ and `ARCHITECTURE.md` (Security controls).
 - **Secrets:** keys are read from the environment only and are never logged,
   rendered or committed. `/api/status` shows provider names and availability,
   not keys.
-- **Sessions:** an anonymous `__Host-` cookie (HttpOnly, SameSite=Lax, Secure)
-  with a sliding 2-hour expiry. This is not an account boundary. Cross-site
-  API requests are refused.
-- **Data:** uploads are never written to disk. Text lives in memory until
-  removal, 2 hours idle, or restart. Only the question and retrieved passages
+- **Sessions:** `__Host-` cookies (HttpOnly, SameSite=Lax, Secure): documents
+  under a sliding 2-hour session, optional Firebase sign-in (ID token verified
+  server-side: RS256 signature, audience, issuer, expiry, verified e-mail) under
+  a 7-day login. Documents are tied to the browser session, not the account.
+  Cross-site API requests are refused.
+- **Data:** the original upload is never stored. A guest's text lives in memory until
+  removal, 2 hours idle, or restart; a signed-in user's text and embeddings are
+  stored in Redis under a namespace derived from the verified uid, for 30 days or
+  until removed. Only the question and retrieved passages
   are sent to the AI provider, and the upload screen says so. Model reasoning
   is displayed but never stored.
 - **Limits:** per-IP rate limits (`X-Real-IP` is trusted only from
