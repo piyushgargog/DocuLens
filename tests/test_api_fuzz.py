@@ -49,7 +49,10 @@ cookies = st.dictionaries(st.sampled_from(["session_id", "__Host-session", "auth
 
 
 def check(response):
-    not_configured = response.status_code == 503 and response.json().get("error") == "Sign-in is not configured on this server."
+    not_configured = response.status_code == 503 and response.json().get("error") in {
+        "Sign-in is not configured on this server.",
+        "The check is not configured on this server.",
+    }
     assert response.status_code < 500 or not_configured, (response.status_code, response.text[:200])  # (503 is the documented "sign-in is off" answer)
     text = response.text
     assert "Traceback" not in text and not re.search(r"[A-Za-z]:\\\\|/srv/|/home/|site-packages", text)

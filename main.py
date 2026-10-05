@@ -8,6 +8,7 @@ pipeline.ingest()/answer()/summarize() to HTTP and holds per-session state.
 """
 
 import asyncio
+import hashlib
 import ipaddress
 import json
 import os
@@ -21,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.concurrency import iterate_in_threadpool, run_in_threadpool
@@ -134,17 +136,48 @@ def _security_headers() -> dict:
     configured: the SDK is served from this origin, but it talks to Google's
     identity APIs, loads Google's gapi script and opens the sign-in popup (which
     COOP `same-origin` would sever, hence `same-origin-allow-popups`)."""
-    if not auth.enabled():
-        return SECURITY_HEADERS
-    domain = auth.web_config()["authDomain"]
-    csp = SECURITY_HEADERS["Content-Security-Policy"]
-    csp = csp.replace("script-src 'self'", "script-src 'self' https://apis.google.com")
-    csp = csp.replace(
-        "connect-src 'self'",
-        "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com",
-    )
-    csp += f"; frame-src https://{domain} https://accounts.google.com"
-    return {**SECURITY_HEADERS, "Content-Security-Policy": csp, "Cross-Origin-Opener-Policy": "same-origin-allow-popups"}
+    headers = dict(SECURITY_HEADERS)
+    csp = headers["Content-Security-Policy"]
+    frames: list[str] = []
+    if auth.enabled():
+        domain = auth.web_config()["authDomain"]
+        csp = csp.replace("script-src 'self'", "script-src 'self' https://apis.google.com")
+        csp = csp.replace(
+            "connect-src 'self'",
+            "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com",
+        )
+        frames += [f"https://{domain}", "https://accounts.google.com"]
+        headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
+    if _turnstile():
+        # Cloudflare Turnstile: its script and its challenge frame, nothing else.
+        csp = csp.replace("script-src 'self'", "script-src 'self' https://challenges.cloudflare.com", 1)
+        frames.append("https://challenges.cloudflare.com")
+    if frames:
+        csp += "; frame-src " + " ".join(frames)
+    headers["Content-Security-Policy"] = csp
+    return headers
+
+
+def _turnstile() -> tuple[str, str] | None:
+    """(site key, secret) of the Cloudflare Turnstile widget guests must pass, or
+    None when it is not configured (the check is then simply off)."""
+    site = os.environ.get("TURNSTILE_SITE_KEY", "").strip()
+    secret = os.environ.get("TURNSTILE_SECRET_KEY", "").strip()
+    return (site, secret) if site and secret else None
+
+
+HUMAN_TTL = 3600  # a passed Turnstile check is good for an hour
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+
+def _verify_turnstile(secret: str, token: str, ip: str) -> bool:
+    try:
+        reply = requests.post(
+            TURNSTILE_VERIFY_URL, data={"secret": secret, "response": token, "remoteip": ip}, timeout=6
+        )
+        return reply.status_code == 200 and reply.json().get("success") is True
+    except (requests.RequestException, ValueError):
+        return False
 
 
 # JSON request bodies are a question and a few ids; anything bigger is abuse.
@@ -621,7 +654,35 @@ async def _quota_limited(request: Request, tier: auth.Tier | None, kind: str) ->
         message = f"Guest limit reached ({per_day} {noun} per day). Sign in with Google to keep going."
     else:
         message = f"Daily limit reached ({per_day} {noun}). Please try again tomorrow."
+    if tier.name == "guest":
+        if blocked := await _guest_guard(request, kind, per_day):
+            return blocked
     return await _rate_limited(request, f"{kind}_daily", [(per_day, auth.DAY)], message)
+
+
+def _too_many(message: str, retry_after: int) -> JSONResponse:
+    response = _error(message, 429)
+    response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
+async def _guest_guard(request: Request, kind: str, per_day: int) -> JSONResponse | None:
+    """Extra daily caps for guests, on top of the per-IP one (which a guest can
+    dodge by switching network): one per browser (its guest cookie, so a shared
+    office IP does not share a quota but clearing the IP does not reset it) and
+    one global ceiling so a swarm of fresh guests cannot drain the LLM budget."""
+    noun = "questions" if kind == "ask" else "uploads"
+    if _turnstile() and not await _store.get_json(f"human:{_client_ip(request)}"):
+        return JSONResponse({"error": "Please complete the quick check first.", "challenge": True}, status_code=403)
+    ceiling = auth._env_int("GUEST_GLOBAL_DAILY_QUESTIONS", 600) if kind == "ask" else auth._env_int("GUEST_GLOBAL_DAILY_UPLOADS", 200)
+    if retry := await _store.rate_hit(f"rl:guests:{kind}_daily", [(ceiling, auth.DAY)]):
+        return _too_many(f"Guest access is very busy today. Sign in with Google to keep using {noun}.", retry)
+    device = request.cookies.get(_cookie_name(request), "")
+    if _TOKEN_RE.fullmatch(device):
+        key = hashlib.sha256(device.encode()).hexdigest()[:32]
+        if retry := await _store.rate_hit(f"rl:dev:{key}:{kind}_daily", [(per_day, auth.DAY)]):
+            return _too_many(f"Guest limit reached ({per_day} {noun} per day). Sign in with Google to keep going.", retry)
+    return None
 
 
 def _doc_limit_message(tier: auth.Tier | None, max_docs: int) -> str:
@@ -1398,6 +1459,8 @@ async def me(request: Request):
     return {
         "auth_enabled": auth.enabled(),
         "firebase": auth.web_config() if auth.enabled() else None,
+        "turnstile_site_key": keys[0] if (keys := _turnstile()) and not user else None,
+        "human": bool(await _store.get_json(f"human:{_client_ip(request)}")) if _turnstile() else True,
         "user": {"name": user["name"], "email": user["email"]} if user else None,
         "limits": (
             {"tier": tier.name, "max_docs": tier.max_docs, "questions_per_day": tier.ask_per_day}
@@ -1405,6 +1468,25 @@ async def me(request: Request):
             else None
         ),
     }
+
+
+@app.post("/api/turnstile")
+async def turnstile(request: Request):
+    """Verify a Cloudflare Turnstile token (from the browser widget) and remember,
+    for this network, that a human passed - guests need it before uploading or asking."""
+    keys = _turnstile()
+    if keys is None:
+        return _error("The check is not configured on this server.", 503)
+    if limited := await _rate_limited(request, "login"):
+        return limited
+    token = (await _json_body(request)).get("token")
+    ip = _client_ip(request)
+    if not isinstance(token, str) or not 0 < len(token) <= 2048:
+        return _error("The check did not complete. Please try again.", 400)
+    if not await run_in_threadpool(_verify_turnstile, keys[1], token, ip):
+        return _error("The check did not pass. Please try again.", 400)
+    await _store.set_json(f"human:{ip}", {"t": time.time()}, HUMAN_TTL)
+    return {"ok": True}
 
 
 @app.post("/api/logout")

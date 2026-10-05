@@ -513,7 +513,7 @@ class TestOutboundRequests:
             hits = re.findall(r"requests\.(get|post|put|delete|patch|head|request)\(", path.read_text(encoding="utf-8"))
             if hits:
                 callers[path.name] = len(hits)
-        assert callers == {"auth.py": 1, "llm_client.py": 1}, callers
+        assert callers == {"auth.py": 1, "llm_client.py": 1, "main.py": 1}, callers  # main.py: Cloudflare Turnstile verification
 
     def test_user_supplied_urls_in_any_field_cause_no_outbound_request(self, monkeypatch, client):
         def forbidden(*a, **k):
@@ -726,3 +726,77 @@ def test_ipv6_guests_are_limited_per_64_not_per_address():
     assert main._rate_key("::ffff:203.0.113.9") == "203.0.113.9"
     assert main._rate_key("203.0.113.9") == "203.0.113.9"
     assert main._rate_key("not-an-ip") == "not-an-ip"
+
+
+def _guest_request(cookie: str = ""):
+    from starlette.requests import Request
+
+    headers = [(b"cookie", f"session_id={cookie}".encode())] if cookie else []
+    return Request({"type": "http", "method": "POST", "path": "/", "headers": headers, "client": ("198.51.100.7", 1)})
+
+
+def test_guest_quota_is_also_counted_per_browser(signin_on):
+    """Rotating the IP does not reset a browser's own daily cap."""
+    import asyncio
+
+    import main
+
+    cookie = "B" * 24
+    results = [asyncio.run(main._guest_guard(_guest_request(cookie), "ask", 2)) for _ in range(3)]
+    assert results[0] is None and results[1] is None
+    assert results[2] is not None and results[2].status_code == 429
+    # a different browser has its own allowance
+    assert asyncio.run(main._guest_guard(_guest_request("C" * 24), "ask", 2)) is None
+
+
+def test_global_guest_ceiling_stops_a_swarm(signin_on, monkeypatch):
+    import asyncio
+
+    import main
+
+    monkeypatch.setenv("GUEST_GLOBAL_DAILY_QUESTIONS", "2")
+    results = [asyncio.run(main._guest_guard(_guest_request(), "ask", 5)) for _ in range(3)]
+    assert results[0] is None and results[1] is None
+    assert results[2] is not None and results[2].status_code == 429
+
+
+def test_turnstile_gates_guests_until_a_human_check_passes(signin_on, monkeypatch):
+    import asyncio
+
+    import main
+
+    monkeypatch.setenv("TURNSTILE_SITE_KEY", "site")
+    monkeypatch.setenv("TURNSTILE_SECRET_KEY", "secret")
+    blocked = asyncio.run(main._guest_guard(_guest_request("D" * 24), "ask", 5))
+    assert blocked.status_code == 403 and b'"challenge":true' in blocked.body
+    asyncio.run(main._store.set_json("human:198.51.100.7", {"t": 1}, 60))
+    assert asyncio.run(main._guest_guard(_guest_request("D" * 24), "ask", 5)) is None
+
+
+def test_turnstile_endpoint_only_trusts_cloudflares_verdict(signin_on, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import main
+
+    monkeypatch.setenv("TURNSTILE_SITE_KEY", "site")
+    monkeypatch.setenv("TURNSTILE_SECRET_KEY", "secret")
+    client = TestClient(main.app)
+    monkeypatch.setattr(main, "_verify_turnstile", lambda secret, token, ip: token == "good")
+    assert client.post("/api/turnstile", json={"token": "bad"}).status_code == 400
+    assert client.post("/api/turnstile", json={}).status_code == 400
+    assert client.post("/api/turnstile", json={"token": "x" * 3000}).status_code == 400
+    assert client.post("/api/turnstile", json={"token": "good"}).json() == {"ok": True}
+    me = client.get("/api/me").json()
+    assert me["turnstile_site_key"] == "site" and me["human"] is True
+    csp = client.get("/api/me").headers["content-security-policy"]
+    assert "https://challenges.cloudflare.com" in csp
+
+
+def test_turnstile_off_means_no_gate_and_no_csp_change(signin_on, monkeypatch):
+    import asyncio
+
+    import main
+
+    monkeypatch.delenv("TURNSTILE_SITE_KEY", raising=False)
+    assert asyncio.run(main._guest_guard(_guest_request("E" * 24), "ask", 5)) is None
+    assert "cloudflare" not in main._security_headers()["Content-Security-Policy"]

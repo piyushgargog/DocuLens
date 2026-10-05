@@ -33,7 +33,14 @@ def fake_answer(question, states, history=None):
 
 def test_sign_in_is_off_without_configuration(client, monkeypatch):
     monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
-    assert client.get("/api/me").json() == {"auth_enabled": False, "firebase": None, "user": None, "limits": None}
+    assert client.get("/api/me").json() == {
+        "auth_enabled": False,
+        "firebase": None,
+        "turnstile_site_key": None,
+        "human": True,
+        "user": None,
+        "limits": None,
+    }
     assert sign_in(client).status_code == 503
     # and nothing is limited: two documents at once, as before
     assert client.post("/api/ingest", files=TXT).status_code == 200
