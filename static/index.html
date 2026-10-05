@@ -52,45 +52,47 @@
   </header>
 
   <div class="layout">
-    <!-- Saved chats (signed-in users only) -->
-    <aside class="chats" id="chats-panel" aria-label="Your chats" hidden>
-      <div class="chats-head">
-        <h2 class="shelf-title">Chats</h2>
-        <button type="button" class="btn btn-primary btn-xs" id="new-chat-btn">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-          New chat
-        </button>
-      </div>
-      <ul class="chat-list" id="chat-list" aria-label="Chat history"></ul>
-      <p class="chat-empty" id="chat-empty" hidden>No chats yet. Ask a question and it will be saved here.</p>
-    </aside>
-
-    <!-- Documents in this session (shown once at least one is loaded) -->
-    <aside class="shelf" aria-label="Your documents">
-      <div class="shelf-head">
-        <h2 class="shelf-title">Documents</h2>
-        <span id="add-status" class="add-status" hidden><span class="spinner" aria-hidden="true"></span> Reading&hellip;</span>
-      </div>
-      <label for="add-file-input" class="btn btn-primary btn-block" id="add-btn" tabindex="0">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-        Add PDF
-      </label>
-      <input id="add-file-input" type="file" accept="application/pdf,.txt,.md,.markdown,.docx" hidden />
-      <p class="shelf-note" id="shelf-note" hidden></p>
-      <ul id="doc-list" class="doc-list"></ul>
-      <div class="shelf-actions">
-        <div class="shelf-links">
-          <button id="export-btn" class="btn btn-ghost" type="button" disabled>
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14" /></svg>
-            Export conversation
-          </button>
-          <button id="remove-btn" class="btn btn-ghost btn-danger" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>
-            Remove all
+    <div class="side">
+      <!-- Saved chats (signed-in users only) -->
+      <aside class="chats" id="chats-panel" aria-label="Your chats" hidden>
+        <div class="chats-head">
+          <h2 class="shelf-title">Chats</h2>
+          <button type="button" class="btn btn-primary btn-xs" id="new-chat-btn">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            New chat
           </button>
         </div>
-      </div>
-    </aside>
+        <ul class="chat-list" id="chat-list" aria-label="Chat history"></ul>
+        <p class="chat-empty" id="chat-empty" hidden>No chats yet. Ask a question and it will be saved here.</p>
+      </aside>
+
+      <!-- Documents in this session (shown once at least one is loaded) -->
+      <aside class="shelf" aria-label="Your documents">
+        <div class="shelf-head">
+          <h2 class="shelf-title">Documents</h2>
+          <span id="add-status" class="add-status" hidden><span class="spinner" aria-hidden="true"></span> Reading&hellip;</span>
+        </div>
+        <label for="add-file-input" class="btn btn-primary btn-block" id="add-btn" tabindex="0">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          Add PDF
+        </label>
+        <input id="add-file-input" type="file" accept="application/pdf,.txt,.md,.markdown,.docx" hidden />
+        <p class="shelf-note" id="shelf-note" hidden></p>
+        <ul id="doc-list" class="doc-list"></ul>
+        <div class="shelf-actions">
+          <div class="shelf-links">
+            <button id="export-btn" class="btn btn-ghost" type="button" disabled>
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14" /></svg>
+              Export conversation
+            </button>
+            <button id="remove-btn" class="btn btn-ghost btn-danger" type="button">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>
+              Remove all
+            </button>
+          </div>
+        </div>
+      </aside>
+    </div>
 
     <main class="desk">
       <!-- Empty / upload state -->

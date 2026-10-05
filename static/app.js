@@ -1587,6 +1587,15 @@ async function refreshMe() {
     userChip.title = me.user.email;
     userChip.hidden = false;
     chatsPanel.hidden = false;
+    // The opening screen of a signed-in user is a start-a-chat screen, not the pitch.
+    const first = me.user.name.trim().split(/\s+/)[0] || "there";
+    document.querySelector("#upload-view .intro-title").replaceChildren(
+      document.createTextNode(`Welcome back, ${first}.`),
+      document.createElement("br"),
+      document.createTextNode("What shall we read today?"),
+    );
+    document.querySelector("#upload-view .intro-body").textContent =
+      "Drop a PDF, Word, text or Markdown file to start a new chat. Your chats and documents are saved in the sidebar.";
   } else {
     userChip.hidden = true;
     signinLink.hidden = false;

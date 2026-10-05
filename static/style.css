@@ -403,6 +403,65 @@ a {
   font-weight: 600;
 }
 
+/* ---------- Signed-in workspace ---------- */
+
+/* Guests: the wrapper is invisible and the document shelf lays out as before.
+   Signed in: chats and documents become ONE sidebar panel, and the opening page
+   stops looking like the marketing landing page. */
+.side {
+  display: contents;
+}
+
+body[data-auth="user"] .side {
+  flex: none;
+  width: 268px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+body[data-auth="user"] .side .chats,
+body[data-auth="user"] .side .shelf {
+  width: auto;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: none;
+}
+
+body[data-auth="user"] .side .chats {
+  flex: 1 1 auto;
+  min-height: 140px;
+}
+
+body[data-auth="user"] .side .shelf {
+  flex: none;
+  max-height: 55%;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+/* The home of a signed-in user is a quiet start-a-chat screen, not the pitch. */
+body[data-auth="user"] .eyebrow-badge,
+body[data-auth="user"] .hero-demo,
+body[data-auth="user"] .features,
+body[data-auth="user"] .privacy-note {
+  display: none;
+}
+
+body[data-auth="user"] #upload-view {
+  justify-content: center;
+}
+
+body[data-auth="user"] .intro-title {
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+}
+
 /* ---------- Saved chats (signed-in sidebar) ---------- */
 
 .chats {
@@ -664,6 +723,14 @@ body:not([data-auth="user"]) .chats {
 }
 
 @media (max-width: 900px) {
+  body[data-auth="user"] .side {
+    width: auto;
+  }
+
+  body[data-auth="user"] .side .shelf {
+    max-height: none;
+  }
+
   .chats {
     width: auto;
     padding: 8px;
