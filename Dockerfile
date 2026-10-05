@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir --upgrade pip "setuptools>=83"
 # installing the CPU build here first means sentence-transformers (pulled
 # in by requirements.txt below) finds torch already satisfied and never
 # reaches for the CUDA-bundled variant.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir "torch>=2.13.0" --index-url https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

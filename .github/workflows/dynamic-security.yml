@@ -31,7 +31,7 @@ jobs:
           FIREBASE_PROJECT_ID: ci-project
           FIREBASE_API_KEY: ci-key
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "torch>=2.13.0" --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
           nohup uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 2; done

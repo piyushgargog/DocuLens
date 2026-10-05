@@ -104,7 +104,7 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: Install
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "torch>=2.13.0" --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt schemathesis==4.29.3
       - name: Start the app and fuzz every operation from its OpenAPI document
         env:

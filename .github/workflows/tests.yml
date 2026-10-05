@@ -42,7 +42,7 @@ jobs:
         # keeps sentence-transformers from pulling PyPI's default torch
         # build, which bundles several hundred MB of unused NVIDIA/CUDA
         # packages on Linux and slows every CI run down for nothing.
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+        run: pip install "torch>=2.13.0" --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
         # The runner's Python ships an outdated setuptools with known
@@ -87,7 +87,7 @@ jobs:
             requirements-dev.txt
 
       - name: Install CPU-only PyTorch
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+        run: pip install "torch>=2.13.0" --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies and Chromium
         run: |
