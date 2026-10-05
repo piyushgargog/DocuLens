@@ -1,0 +1,244 @@
+{
+ "document": "sample_docs/dev_real_world_document.pdf",
+ "description": "Items 1-15 are follow-ups that only make sense after the `previous` question (pronouns and ellipsis); items 16-23 (kind: topic_change) are self-contained questions that follow an UNRELATED previous question, to check a resolver does not drag the old topic in. Used by conversation_eval.py to compare retrieval with the follow-up alone, with the old concatenation, and with the new resolver. 16 items, one document.",
+ "items": [
+  {
+   "id": 1,
+   "previous": "How many attention heads does the Transformer use?",
+   "question": "What is the dimension of each of them?",
+   "standalone": "What is the dimension of each of the attention heads?",
+   "pages": [
+    5
+   ],
+   "evidence": "dk = dv = dmodel/h = 64"
+  },
+  {
+   "id": 2,
+   "previous": "What optimizer was used for training?",
+   "question": "What were its hyperparameters?",
+   "standalone": "What were the Adam optimizer hyperparameters?",
+   "pages": [
+    7
+   ],
+   "evidence": "β1 = 0.9, β2 = 0.98 and"
+  },
+  {
+   "id": 3,
+   "previous": "Tell me about the positional encodings.",
+   "question": "Why did the authors choose that version?",
+   "standalone": "Why did the authors choose sinusoidal positional encodings?",
+   "pages": [
+    6
+   ],
+   "evidence": "extrapolate to sequence lengths longer"
+  },
+  {
+   "id": 4,
+   "previous": "What dataset was used for English-German?",
+   "question": "How big is it?",
+   "standalone": "How big is the English-German dataset?",
+   "pages": [
+    7
+   ],
+   "evidence": "about 4.5 million sentence pairs"
+  },
+  {
+   "id": 5,
+   "previous": "Tell me about the big model.",
+   "question": "How long did it train?",
+   "standalone": "How long did the big model train?",
+   "pages": [
+    7
+   ],
+   "evidence": "The big models were trained for 300,000"
+  },
+  {
+   "id": 6,
+   "previous": "What is scaled dot-product attention?",
+   "question": "Why are the dot products scaled?",
+   "standalone": "Why are the dot products in scaled dot-product attention scaled?",
+   "pages": [
+    4
+   ],
+   "evidence": "extremely small gradients"
+  },
+  {
+   "id": 7,
+   "previous": "What does the decoder contain?",
+   "question": "What third sub-layer does it add?",
+   "standalone": "What third sub-layer does the decoder add?",
+   "pages": [
+    3
+   ],
+   "evidence": "the decoder inserts a third sub-layer"
+  },
+  {
+   "id": 8,
+   "previous": "What activation does the feed-forward network use?",
+   "question": "How large is its inner layer?",
+   "standalone": "How large is the inner layer of the feed-forward network?",
+   "pages": [
+    5
+   ],
+   "evidence": "dff = 2048"
+  },
+  {
+   "id": 9,
+   "previous": "How was the model regularized?",
+   "question": "And what dropout rate did the base model use?",
+   "standalone": "What dropout rate did the base model use?",
+   "pages": [
+    8
+   ],
+   "evidence": "we use a rate of Pdrop = 0.1"
+  },
+  {
+   "id": 10,
+   "previous": "What is the self-attention layer's maximum path length?",
+   "question": "How does that compare with a recurrent layer?",
+   "standalone": "How does the self-attention maximum path length compare with a recurrent layer?",
+   "pages": [
+    6
+   ],
+   "evidence": "Recurrent O(n · d2) O(n) O(n)"
+  },
+  {
+   "id": 11,
+   "previous": "How many GPUs were used for training?",
+   "question": "How long did each step take for them?",
+   "standalone": "How long did each training step take on the 8 GPUs?",
+   "pages": [
+    7
+   ],
+   "evidence": "each training step took about 0.4 seconds"
+  },
+  {
+   "id": 12,
+   "previous": "What beam search settings were used?",
+   "question": "And the length penalty?",
+   "standalone": "What length penalty was used in beam search?",
+   "pages": [
+    8
+   ],
+   "evidence": "length penalty α = 0.6"
+  },
+  {
+   "id": 13,
+   "previous": "Tell me about label smoothing.",
+   "question": "Does it help or hurt?",
+   "standalone": "Does label smoothing help or hurt?",
+   "pages": [
+    8
+   ],
+   "evidence": "hurts perplexity"
+  },
+  {
+   "id": 14,
+   "previous": "Which positional encodings did they compare?",
+   "question": "Which one gave better results?",
+   "standalone": "Which positional encodings gave better results, learned or sinusoidal?",
+   "pages": [
+    6
+   ],
+   "evidence": "nearly identical results"
+  },
+  {
+   "id": 15,
+   "previous": "What does multi-head attention do?",
+   "question": "What happens if only one is used?",
+   "standalone": "What happens if only one attention head is used?",
+   "pages": [
+    5
+   ],
+   "evidence": "With a single attention head, averaging inhibits this"
+  },
+  {
+   "id": 16,
+   "kind": "topic_change",
+   "previous": "How many attention heads does the Transformer use?",
+   "question": "What hardware were the models trained on?",
+   "standalone": "What hardware were the models trained on?",
+   "pages": [
+    7
+   ],
+   "evidence": "one machine with 8 NVIDIA P100 GPUs"
+  },
+  {
+   "id": 17,
+   "kind": "topic_change",
+   "previous": "What optimizer was used?",
+   "question": "What is the beam size?",
+   "standalone": "What is the beam size?",
+   "pages": [
+    8
+   ],
+   "evidence": "beam size of 4"
+  },
+  {
+   "id": 18,
+   "kind": "topic_change",
+   "previous": "Tell me about the positional encodings.",
+   "question": "What dropout rate did the base model use?",
+   "standalone": "What dropout rate did the base model use?",
+   "pages": [
+    8
+   ],
+   "evidence": "we use a rate of Pdrop = 0.1"
+  },
+  {
+   "id": 19,
+   "kind": "topic_change",
+   "previous": "Why is dot-product attention scaled?",
+   "question": "How many warmup steps are used?",
+   "standalone": "How many warmup steps are used?",
+   "pages": [
+    7
+   ],
+   "evidence": "warmup_steps = 4000"
+  },
+  {
+   "id": 20,
+   "kind": "topic_change",
+   "previous": "What dataset was used for English-German?",
+   "question": "What activation does the feed-forward network use?",
+   "standalone": "What activation does the feed-forward network use?",
+   "pages": [
+    5
+   ],
+   "evidence": "ReLU activation in between"
+  },
+  {
+   "id": 21,
+   "kind": "topic_change",
+   "previous": "How long did the big model train?",
+   "question": "Which label smoothing value was used?",
+   "standalone": "Which label smoothing value was used?",
+   "pages": [
+    8
+   ],
+   "evidence": "label smoothing of value"
+  },
+  {
+   "id": 22,
+   "kind": "topic_change",
+   "previous": "What is the decoder made of?",
+   "question": "What vocabulary was used for English-French?",
+   "standalone": "What vocabulary was used for English-French?",
+   "pages": [
+    7
+   ],
+   "evidence": "32000 word-piece vocabulary"
+  },
+  {
+   "id": 23,
+   "kind": "topic_change",
+   "previous": "What does self-attention connect?",
+   "question": "How many sentence pairs are in the English-German training data?",
+   "standalone": "How many sentence pairs are in the English-German training data?",
+   "pages": [
+    7
+   ],
+   "evidence": "about 4.5 million sentence pairs"
+  }
+ ]
+}
