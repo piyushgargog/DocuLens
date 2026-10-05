@@ -7,6 +7,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 5  # a freshly published (possibly malicious) release is not proposed for 5 days
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
@@ -26,6 +28,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 5  # a freshly published (possibly malicious) release is not proposed for 5 days
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
@@ -35,3 +39,15 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  # The Firebase browser bundle is built from tools/firebase (npm).
+  - package-ecosystem: "npm"
+    directory: "/tools/firebase"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 5
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"

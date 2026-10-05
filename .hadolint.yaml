@@ -1,0 +1,5 @@
+# Dockerfile lint policy. Each ignored rule has a reason; everything else must pass.
+ignored:
+  - DL3008  # apt packages are deliberately unpinned: rebuilds pick up Debian security fixes for tesseract
+  - DL3013  # pip and setuptools are deliberately upgraded to latest (advisories were found in the base image's copies)
+  - DL3059  # separate RUN steps keep the pip layers cacheable independently
