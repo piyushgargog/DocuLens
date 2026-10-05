@@ -513,9 +513,24 @@ def _client_ip(request: Request) -> str:
         peer_addr = ipaddress.ip_address(peer)
     except ValueError:
         return peer
+    address = peer
     if any(peer_addr in net for net in _TRUSTED_PROXY_NETS):
-        return request.headers.get("x-real-ip", peer)
-    return peer
+        address = request.headers.get("x-real-ip", peer)
+    return _rate_key(address)
+
+
+def _rate_key(address: str) -> str:
+    """One IPv6 subscriber holds a whole /64, so counting single addresses would
+    let a guest dodge the limit by rotating through it. Count the /64 instead."""
+    try:
+        ip = ipaddress.ip_address(address.strip())
+    except ValueError:
+        return address[:64]
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False).network_address) + "/64"
+    return str(ip)
 
 
 async def _rate_limited(

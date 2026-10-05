@@ -716,3 +716,13 @@ class TestConcurrency:
 
 async def _both(a, b):
     return await asyncio.gather(a, b)
+
+
+def test_ipv6_guests_are_limited_per_64_not_per_address():
+    import main
+
+    assert main._rate_key("2001:db8:1:2::1") == main._rate_key("2001:db8:1:2:ffff:ffff:ffff:ffff")
+    assert main._rate_key("2001:db8:1:3::1") != main._rate_key("2001:db8:1:2::1")
+    assert main._rate_key("::ffff:203.0.113.9") == "203.0.113.9"
+    assert main._rate_key("203.0.113.9") == "203.0.113.9"
+    assert main._rate_key("not-an-ip") == "not-an-ip"
