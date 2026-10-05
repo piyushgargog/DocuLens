@@ -3014,3 +3014,10 @@ body[data-view="chat"] .site-footer {
     animation: spin 1s linear infinite !important;
   }
 }
+
+.human-box {
+  display: flex;
+  justify-content: center;
+  min-height: 70px;
+  margin: var(--space-3, 12px) 0;
+}

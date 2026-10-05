@@ -211,6 +211,13 @@
 
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
+  <dialog id="human-dialog" class="dialog signin-dialog" aria-labelledby="human-title">
+    <h2 id="human-title">One quick check</h2>
+    <p class="signin-lead">Confirm you are not a bot, then you can carry on. You will be asked again in about an hour.</p>
+    <div id="human-box" class="human-box"></div>
+    <p id="human-error" class="error-text" role="alert" hidden></p>
+  </dialog>
+
   <dialog id="signin-dialog" class="dialog signin-dialog" aria-labelledby="signin-title">
     <span class="signin-logo" aria-hidden="true">
       <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8" class="logo-bg" /><path d="M10 8h8l5 5v11H10z" class="logo-page" /><rect x="13" y="16" width="7" height="2.4" rx="1" class="logo-mark" /></svg>

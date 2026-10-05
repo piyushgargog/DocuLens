@@ -101,7 +101,7 @@ function stopReadingFacts() {
  * returning an HTML 413/502 page) or a dropped connection becomes
  * {error: "..."} instead of an exception that would leave the UI stuck.
  */
-async function api(url, body) {
+async function api(url, body, retried = false) {
   const options = { method: body === undefined ? "GET" : "POST" };
   if (body instanceof FormData) {
     options.body = body;
@@ -123,6 +123,9 @@ async function api(url, body) {
   } catch (err) {
     if (response.status === 413) return { error: "That file is over the 25MB limit." };
     return { error: `The server sent an unexpected response (HTTP ${response.status}). Try again in a moment.` };
+  }
+  if (response.status === 403 && data.challenge && !retried && (await solveChallenge())) {
+    return api(url, body, true);
   }
   if (!response.ok && !data.error) {
     data.error = `The request failed (HTTP ${response.status}). Try again in a moment.`;
@@ -1093,6 +1096,9 @@ async function askQuestion(question, shown = question) {
         data = {};
       }
       failed = data.error || `The request failed (HTTP ${response.status}). Try again in a moment.`;
+      if (response.status === 403 && data.challenge && (await solveChallenge())) {
+        failed = "Check complete. Send your question again.";
+      }
       if (response.status === 409) syncDocuments();
       if (response.status === 404 && currentChatId) loadChats();  // the chat is gone (deleted elsewhere)
     } else {
@@ -1600,6 +1606,7 @@ async function refreshMe() {
     userChip.hidden = true;
     signinLink.hidden = false;
     firebaseConfig = me.firebase;
+    turnstileKey = me.turnstile_site_key || null;
     loadFirebaseSdk().catch(() => {});
     const limits = me.limits || {};
     const docs = limits.max_docs === 1 ? "1 document" : `${limits.max_docs} documents`;
@@ -1632,6 +1639,68 @@ function loadFirebaseSdk() {
     document.head.appendChild(script);
   });
   return firebaseLoading;
+}
+
+// Cloudflare Turnstile: guests pass a quick bot check (once an hour) before they
+// upload or ask. The widget script loads from Cloudflare only when it is needed.
+let turnstileKey = null;
+let turnstileLoading = null;
+let challengeRun = null;
+const humanDialog = document.getElementById("human-dialog");
+const humanBox = document.getElementById("human-box");
+const humanError = document.getElementById("human-error");
+
+function loadTurnstile() {
+  if (window.turnstile) return Promise.resolve();
+  turnstileLoading ||= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    script.onload = resolve;
+    script.onerror = () => {
+      turnstileLoading = null;
+      reject(new Error("turnstile"));
+    };
+    document.head.appendChild(script);
+  });
+  return turnstileLoading;
+}
+
+function solveChallenge() {
+  if (!turnstileKey) return Promise.resolve(false);
+  challengeRun ||= (async () => {
+    try {
+      await loadTurnstile();
+    } catch (err) {
+      return false;
+    }
+    humanBox.replaceChildren();
+    humanError.hidden = true;
+    return new Promise((resolve) => {
+      let finished = false;
+      const finish = (ok) => {
+        if (finished) return;
+        finished = true;
+        if (humanDialog.open) humanDialog.close();
+        resolve(ok);
+      };
+      humanDialog.addEventListener("close", () => finish(false), { once: true });
+      humanDialog.showModal();
+      window.turnstile.render(humanBox, {
+        sitekey: turnstileKey,
+        callback: async (token) => {
+          const reply = await api("/api/turnstile", { token }, true);
+          finish(!reply.error);
+        },
+        "error-callback": () => {
+          humanError.textContent = "The check could not load. Reload the page and try again.";
+          humanError.hidden = false;
+        },
+      });
+    });
+  })().finally(() => {
+    challengeRun = null;
+  });
+  return challengeRun;
 }
 
 const signinDialog = document.getElementById("signin-dialog");
