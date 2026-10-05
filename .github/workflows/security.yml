@@ -38,7 +38,7 @@ jobs:
           bandit -r . -x ./tests,./venv,./tools,./static -ll -q
       - name: Semgrep (python, OWASP top ten, secrets)
         run: |
-          pip install semgrep==1.99.0
+          pip install semgrep==1.179.0
           semgrep scan --config p/python --config p/owasp-top-ten --config p/secrets --metrics off --error --severity ERROR --exclude tests --exclude static/firebase-auth.js --json -o out/semgrep.json .
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -114,5 +114,5 @@ jobs:
         run: |
           python -c "import json, main; open('openapi.json', 'w').write(json.dumps(main.app.openapi()))"
           uvicorn main:app --port 8141 &
-          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8141/api/health && break; sleep 2; done
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:8141/api/health && break; sleep 2; done
           st run openapi.json --url http://127.0.0.1:8141 --max-examples 50 --checks not_a_server_error --workers 1

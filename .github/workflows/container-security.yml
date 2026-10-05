@@ -37,6 +37,23 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build
         run: docker build -t doculens:ci .
+      - name: Trivy image report (package paths, for triage)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: doculens:ci
+          format: json
+          output: trivy-image.json
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+          ignore-unfixed: true
+      - name: Show where each finding lives
+        run: |
+          python3 - <<'PY'
+          import json
+          for r in json.load(open("trivy-image.json")).get("Results", []):
+              for v in r.get("Vulnerabilities") or []:
+                  print(v["Severity"], v["VulnerabilityID"], v["PkgName"], v["InstalledVersion"], "->", v.get("FixedVersion"), "|", v.get("PkgPath") or r["Target"])
+          PY
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -58,6 +75,6 @@ jobs:
         run: |
           docker run -d --name app --read-only --tmpfs /tmp --tmpfs /app/.cache --cap-drop ALL \
             --security-opt no-new-privileges --memory 2g --pids-limit 256 -p 127.0.0.1:8000:8000 doculens:ci
-          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 2; done
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 2; done
           curl -sf http://127.0.0.1:8000/api/health
           test "$(docker exec app id -u)" = "10001"

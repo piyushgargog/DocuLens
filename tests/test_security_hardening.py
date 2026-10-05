@@ -493,7 +493,10 @@ class TestFrontendSinks:
     def test_external_scripts_are_same_origin_only(self):
         for src in re.findall(r"<script[^>]*\ssrc=[\"']([^\"']+)", self.HTML):
             assert src.startswith("/static/"), src
-        assert re.findall(r"(?:src|href)=[\"']https?://", self.HTML) == [] or all("github.com" in u for u in re.findall(r"(?:src|href)=[\"'](https?://[^\"']+)", self.HTML))
+        from urllib.parse import urlsplit
+
+        hosts = {urlsplit(u).hostname for u in re.findall(r"(?:src|href)=[\"'](https?://[^\"']+)", self.HTML)}
+        assert hosts <= {"github.com", "doculens.duckdns.org"}, hosts  # the only external links: the project's own pages
 
 
 # =====================================================================
