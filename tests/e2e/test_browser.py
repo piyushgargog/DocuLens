@@ -120,3 +120,117 @@ def test_upload_shows_starters_once_and_streams_an_answer(server, make_page):
     assert answer.locator(".cite").count() >= 1
 
     assert errors == []
+
+
+# ---------- v4: sign-in, saved documents, summaries, sections, warnings ----------
+
+GUEST_ME = {
+    "auth_enabled": True,
+    "firebase": {"apiKey": "fake", "authDomain": "x.firebaseapp.com", "projectId": "x-project"},
+    "user": None,
+    "limits": {"tier": "guest", "max_docs": 1, "questions_per_day": 5},
+}
+USER_ME = {**GUEST_ME, "user": {"name": "Ada Lovelace", "email": "ada@example.com"}, "limits": {"tier": "user", "max_docs": 5, "questions_per_day": 200}}
+
+
+def fake_me(page, payload):
+    page.route("**/api/me", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(payload)))
+
+
+def test_guest_sees_limits_and_a_sign_in_button(server, make_page):
+    page, errors = make_page()
+    fake_me(page, GUEST_ME)
+    page.goto(server)
+    page.locator("#signin-link:not([hidden])").wait_for()
+    note = page.locator("#guest-note")
+    note.wait_for(state="visible")
+    assert "1 document" in note.inner_text() and "5 questions a day" in note.inner_text()
+    assert page.locator("#user-chip").is_hidden()
+    assert "not saved" in page.locator("#shelf-note").inner_text().lower()
+    assert errors == []
+
+
+def test_signed_in_user_sees_a_chip_and_saved_note(server, make_page):
+    page, errors = make_page()
+    fake_me(page, USER_ME)
+    page.goto(server)
+    page.locator("#user-chip:not([hidden])").wait_for()
+    assert page.locator("#user-name").inner_text() == "Ada Lovelace"
+    assert page.locator("#user-avatar").inner_text() == "A"
+    assert page.locator("#signin-link").is_hidden() and page.locator("#guest-note").is_hidden()
+    assert "saved to your account" in page.locator("#shelf-note").inner_text().lower()
+    assert errors == []
+
+
+def test_sign_in_is_hidden_when_it_is_not_configured(server, make_page):
+    page, errors = make_page()
+    page.goto(server)
+    page.wait_for_load_state("networkidle")
+    assert page.locator("#signin-link").is_hidden() and page.locator("#user-chip").is_hidden() and page.locator("#shelf-note").is_hidden()
+    assert errors == []
+
+
+def test_a_partial_summary_says_which_parts_were_not_read(server, make_page):
+    page, errors = make_page()
+    fake_llm_endpoints(page)
+    page.route("**/api/summary", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({
+        "filename": "sample.pdf",
+        "summary": "- The document covers the Solar System [Pages 1-2].",
+        "sources": [{"page": 1, "text": "The Solar System consists of the Sun.", "score": None, "section": "1 Overview"}],
+        "coverage": {"complete": False, "skipped_ranges": ["Pages 3-4"], "failed_ranges": []},
+        "answered_by": {"provider": "Test", "model": "fake-model"},
+    })))
+    page.goto(server)
+    page.set_input_files("#file-input", str(SAMPLE_PDF))
+    page.locator("#doc-list .doc-item").first.wait_for(timeout=120_000)
+    page.locator(".doc-summary").first.click()
+    page.locator(".msg-note", has_text="partial").wait_for()
+    note = page.locator(".msg-note", has_text="partial").inner_text()
+    assert "Pages 3-4" in note and "not read" in note
+    assert errors == []
+
+
+def test_sources_show_their_section_when_there_is_one(server, make_page):
+    page, errors = make_page()
+    fake_llm_endpoints(page)
+    page.route("**/api/ask/stream", lambda route: route.fulfill(status=200, content_type="text/event-stream", body=(
+        _sse("sources", [{"page": 2, "score": 0.5, "section": "3.2 Attention", "text": "Attention maps a query and a set of key-value pairs to an output."}])
+        + _sse("token", {"text": "It maps queries to outputs [Page 2]."}) + _sse("done", {}))))
+    page.goto(server)
+    page.set_input_files("#file-input", str(SAMPLE_PDF))
+    page.locator("button.suggestion").first.wait_for(timeout=120_000)
+    page.fill("#question-input", "What is attention?")
+    page.keyboard.press("Enter")
+    page.locator(".slip-section:not([hidden])").first.wait_for(state="attached")
+    assert page.locator(".slip-section:not([hidden])").first.text_content() == "3.2 Attention"
+    assert errors == []
+
+
+def test_ingest_warnings_are_shown_as_notes(server, make_page):
+    page, errors = make_page()
+    doc = {"id": "d1", "filename": "scan.pdf", "num_pages": 6, "num_chunks": 3}
+    # (route.fetch() cannot replay a binary multipart upload, so the response is faked whole)
+    page.route("**/api/ingest", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(
+        {**doc, "documents": [doc], "warnings": ["Pages 4-6 could not be read (blank, too faint or too noisy).", "Page 2 was hard to read; the text may contain errors."]})))
+    fake_llm_endpoints(page)
+    page.goto(server)
+    page.set_input_files("#file-input", str(SAMPLE_PDF))
+    page.locator(".msg-note", has_text="Pages 4-6 could not be read").wait_for(timeout=30_000)
+    assert page.locator(".msg-note", has_text="hard to read").count() == 1
+    assert errors == []
+
+
+def test_documents_the_server_could_not_restore_are_refreshed_away(server, make_page):
+    page, errors = make_page()
+    fake_llm_endpoints(page)
+    page.goto(server)
+    page.set_input_files("#file-input", str(SAMPLE_PDF))
+    page.locator("button.suggestion").first.wait_for(timeout=120_000)
+    page.route("**/api/ask/stream", lambda route: route.fulfill(status=409, content_type="application/json", body=json.dumps(
+        {"error": "These saved documents could no longer be restored and were removed: a.pdf. Please upload them again."})))
+    page.route("**/api/session", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"documents": [], "history": []})))
+    page.fill("#question-input", "anything?")
+    page.keyboard.press("Enter")
+    page.locator("#upload-view").wait_for(state="visible")
+    assert page.locator("#doc-list .doc-item").count() == 0
+    assert all("409" in e or "Failed to load resource" in e for e in errors)  # the browser logs the 409 itself; nothing else

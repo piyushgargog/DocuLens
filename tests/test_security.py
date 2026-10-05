@@ -126,7 +126,7 @@ def test_x_real_ip_from_a_non_proxy_peer_cannot_dodge_the_limit(client, sample_p
 def test_one_session_cannot_reach_another_sessions_document(sample_pdf_bytes, monkeypatch):
     import llm_client
 
-    monkeypatch.setattr(llm_client, "summarize", lambda p, timeout=30: "secret summary")
+    monkeypatch.setattr(llm_client, "summarize", lambda p, timeout=30, **kw: "secret summary")
     with TestClient(main.app) as alice, TestClient(main.app) as mallory:
         doc = _upload(alice, sample_pdf_bytes).json()
         _upload(mallory, sample_pdf_bytes)

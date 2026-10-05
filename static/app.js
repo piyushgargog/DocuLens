@@ -127,6 +127,7 @@ async function api(url, body) {
   if (!response.ok && !data.error) {
     data.error = `The request failed (HTTP ${response.status}). Try again in a moment.`;
   }
+  data.httpStatus = response.status;
   return data;
 }
 
@@ -463,6 +464,12 @@ function buildNotes(sources, label) {
       multiDoc && src.doc ? `${src.doc}, p. ${src.page}` : `Page ${src.page}`;
     node.querySelector(".slip-score").textContent =
       typeof src.score === "number" ? `similarity ${src.score.toFixed(2)}` : "";
+    if (src.section) {
+      const sectionEl = node.querySelector(".slip-section");
+      sectionEl.textContent = src.section;
+      sectionEl.title = src.section;
+      sectionEl.hidden = false;
+    }
     // PDF extraction keeps the page's hard line breaks; rejoin them so the
     // passage reads as prose (blank lines between paragraphs are kept).
     node.querySelector(".slip-text").textContent = src.text.replace(/(?<!\n)\n(?!\n)/g, " ");
@@ -817,6 +824,7 @@ async function uploadFirst(file) {
   showView("chat");
   renderDocuments(data.documents);
   addNote(`${data.filename} is ready. Ask anything about it.`);
+  for (const warning of data.warnings || []) addNote(warning);
   showSuggestions(data.id);
   questionInput.value = "";
   questionInput.focus();
@@ -843,6 +851,7 @@ async function uploadAdditional(file) {
   }
   renderDocuments(data.documents);
   addNote(`Added ${data.filename}. Questions now search all ${data.documents.length} documents.`);
+  for (const warning of data.warnings || []) addNote(warning);
 }
 
 // Generic starters: only a fallback, shown if the model's tailored questions
@@ -892,6 +901,14 @@ async function showSuggestions(docId) {
   scrollToBottom();
 }
 
+/** The server dropped saved documents it could not restore: show what is left. */
+async function syncDocuments() {
+  const data = await api("/api/session");
+  if (data.error) return;
+  renderDocuments(data.documents);
+  if (!data.documents.length) showView("upload");
+}
+
 async function summarizeDoc(doc, button) {
   button.disabled = true;
   const pending = addPending(`Summarizing ${doc.filename}…`);
@@ -900,6 +917,7 @@ async function summarizeDoc(doc, button) {
 
   if (data.error) {
     showFailure(pending, data.error);
+    if (data.httpStatus === 409) syncDocuments();
     return;
   }
   // The heading already says "Summary of …"; drop the model's own "Summary:" lead-in.
@@ -910,6 +928,13 @@ async function summarizeDoc(doc, button) {
     route: data.answered_by,
   });
   transcript.push({ question: `Summary of ${data.filename}`, answer: answer.text, sources: answer.sources, route: answer.route });
+  const coverage = data.coverage;
+  if (coverage && coverage.complete === false) {
+    const parts = [];
+    if (coverage.skipped_ranges?.length) parts.push(`${coverage.skipped_ranges.slice(0, 6).join(", ")} were not read (the document is long)`);
+    if (coverage.failed_ranges?.length) parts.push(`${coverage.failed_ranges.slice(0, 6).join(", ")} could not be summarised`);
+    addNote(`This summary is partial: ${parts.join("; ")}. Ask about those parts directly for details.`);
+  }
   refreshProviders();
   syncExport();
   scrollToStart(pending);
@@ -1058,6 +1083,7 @@ async function askQuestion(question, shown = question) {
         data = {};
       }
       failed = data.error || `The request failed (HTTP ${response.status}). Try again in a moment.`;
+      if (response.status === 409) syncDocuments();
     } else {
       await readEvents(response, (name, data) => {
         if (name === "sources") {
@@ -1344,6 +1370,95 @@ function showToast(text) {
     setTimeout(() => toast.remove(), 250);
   }, 2600);
 }
+
+// ---------- v3.8: Google sign-in ----------
+// Sign-in is optional to look at but required for full use: guests get a small
+// daily allowance (the server enforces it; this only explains it).
+
+const signinLink = document.getElementById("signin-link");
+const userChip = document.getElementById("user-chip");
+const guestNote = document.getElementById("guest-note");
+
+async function refreshMe() {
+  const me = await api("/api/me");
+  if (me.error || !me.auth_enabled) return;
+  const shelfNote = document.getElementById("shelf-note");
+  shelfNote.hidden = false;
+  shelfNote.textContent = me.user ? "Saved to your account for up to 30 days." : "Guest session: not saved. Sign in to keep your documents.";
+  if (me.user) {
+    signinLink.hidden = true;
+    guestNote.hidden = true;
+    document.getElementById("user-name").textContent = me.user.name;
+    document.getElementById("user-avatar").textContent = (me.user.name.trim()[0] || "?").toUpperCase();
+    userChip.title = me.user.email;
+    userChip.hidden = false;
+  } else {
+    userChip.hidden = true;
+    signinLink.hidden = false;
+    firebaseConfig = me.firebase;
+    loadFirebaseSdk().catch(() => {});
+    const limits = me.limits || {};
+    const docs = limits.max_docs === 1 ? "1 document" : `${limits.max_docs} documents`;
+    document.getElementById("guest-limits").textContent =
+      `${docs} at a time and ${limits.questions_per_day} questions a day.`;
+    guestNote.hidden = false;
+  }
+}
+
+document.getElementById("signout-btn").addEventListener("click", async () => {
+  await api("/api/logout", {});
+  location.reload();
+});
+
+// Firebase's browser SDK is our own bundle (/static/firebase-auth.js), loaded
+// once a guest is on the page so the sign-in popup opens inside the click.
+let firebaseConfig = null;
+let firebaseLoading = null;
+
+function loadFirebaseSdk() {
+  if (window.DocuLensFirebase) return Promise.resolve();
+  firebaseLoading ||= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "/static/firebase-auth.js";
+    script.onload = resolve;
+    script.onerror = () => {
+      firebaseLoading = null;
+      reject(new Error("sdk"));
+    };
+    document.head.appendChild(script);
+  });
+  return firebaseLoading;
+}
+
+let signingIn = false;
+
+async function signIn() {
+  if (signingIn || !firebaseConfig) return;
+  signingIn = true;
+  signinLink.disabled = true;
+  try {
+    await loadFirebaseSdk();
+    const idToken = await window.DocuLensFirebase.signIn(firebaseConfig);
+    const result = await api("/api/login", { id_token: idToken });
+    if (result.error) {
+      showToast(result.error);
+      return;
+    }
+    location.reload();
+  } catch (err) {
+    const code = err && err.code;
+    if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") return;
+    showToast(code === "auth/popup-blocked" ? "Allow pop-ups for this site to sign in." : "Couldn't sign you in. Please try again.");
+  } finally {
+    signingIn = false;
+    signinLink.disabled = false;
+  }
+}
+
+signinLink.addEventListener("click", signIn);
+document.getElementById("guest-signin").addEventListener("click", signIn);
+
+refreshMe();
 
 /** A round button to jump back down after scrolling up in a long conversation. */
 const jumpBtn = document.getElementById("jump-btn");

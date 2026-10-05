@@ -8,3 +8,6 @@ __pycache__/
 
 # Personal interview-prep notes -- never committed/published.
 CODEBASE_GUIDE.md
+
+# Firebase bundle build tooling (the built static/firebase-auth.js is committed).
+tools/firebase/node_modules/

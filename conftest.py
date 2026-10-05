@@ -26,13 +26,17 @@ def sample_pdf_bytes() -> bytes:
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limits():
-    """Rate-limit counters are process-global; give every test a clean slate."""
+    """Rate-limit counters and logins live in the process-wide store; give every test a clean slate."""
     import main
-
     import providers
+    import store
 
-    main._rate_log.clear()
+    main._store = store.MemoryStore()
+    main._user_sessions.clear()
+    main._sessions.clear()
     providers.reset()
     yield
-    main._rate_log.clear()
+    main._store = store.MemoryStore()
+    main._user_sessions.clear()
+    main._sessions.clear()
     providers.reset()

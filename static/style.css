@@ -334,6 +334,112 @@ a {
   transform: translateY(-1px);
 }
 
+/* Google sign-in: signed-in chip in the top bar and the guest allowance note. */
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  font-size: var(--text-sm);
+  color: var(--text-soft);
+}
+
+.user-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-soft-2);
+  color: var(--accent-text);
+  font-weight: 650;
+  font-size: var(--text-xs);
+}
+
+.user-name {
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 550;
+  color: var(--text);
+}
+
+.user-signout {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.user-signout:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.guest-note {
+  max-width: 62ch;
+  margin: 14px 0 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--text-soft);
+}
+
+.guest-note strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.slip-section {
+  margin: 2px 0 4px;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shelf-note {
+  margin: 0 0 10px;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  color: var(--text-faint);
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  font-weight: 550;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+button.pill-link {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+button.pill-link:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
 /* Version + AI-provider health, in the top bar -- shown in a conversation,
    where the footer (which carries the same in the opening page) is hidden. */
 .topbar-status {
@@ -2372,6 +2478,10 @@ body[data-view="chat"] .site-footer {
 
   /* GitHub becomes icon-only on phones to leave room for the status pill. */
   .pill-link span {
+    display: none;
+  }
+
+  .user-name {
     display: none;
   }
 

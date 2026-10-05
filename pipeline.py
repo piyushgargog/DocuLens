@@ -3,20 +3,24 @@
 import os
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
+import conversation
 import embedder
 import llm_client
-from chunker import chunk_pages
-from document_loader import load_document
+import summarizer
+from chunker import chunk_document
+from document_loader import load_document_ex
 from retriever import bm25_scores, ranking, reciprocal_rank_fusion
+from vector_index import VectorIndex
 from vector_store import VectorStore
 
 DEFAULT_CHUNK_SIZE = 800
 DEFAULT_CHUNK_OVERLAP = 150
 DEFAULT_TOP_K = 4
+DENSE_CANDIDATES = 200  # how many nearest chunks an approximate index hands to the fusion
 MAX_HISTORY_TURNS = 3  # earlier Q/A turns sent to the LLM for follow-up questions
 SUMMARY_SAMPLE_CHUNKS = 10  # evenly spaced chunks fed to the summary prompt
 OVERVIEW_CHUNKS = 8  # passages given to the LLM for a whole-document question
@@ -74,6 +78,7 @@ class IndexState:
     chunk_size: int
     chunk_overlap: int
     name: str | None = None
+    warnings: list[str] = field(default_factory=list)  # e.g. scanned pages that could not be read; not persisted
 
 
 def ingest(
@@ -93,11 +98,12 @@ def ingest(
 
     `name` (e.g. the uploaded filename) is tagged onto every chunk so answers
     across several documents can say which document a passage came from."""
-    pages = load_document(name or "document.pdf", pdf_bytes)
+    loaded = load_document_ex(name or "document.pdf", pdf_bytes)
+    pages = loaded.pages
     if not pages:
         return None
 
-    chunks = chunk_pages(pages, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    chunks = chunk_document(pages, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     if not chunks:
         return None
     if max_chunks is not None and len(chunks) > max_chunks:
@@ -111,6 +117,29 @@ def ingest(
     return IndexState(
         store=store,
         num_pages=len(pages),
+        num_chunks=len(chunks),
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        name=name,
+        warnings=loaded.warnings,
+    )
+
+
+def restore(
+    chunks: list[dict],
+    embeddings: np.ndarray,
+    name: str | None,
+    num_pages: int,
+    chunk_size: int,
+    chunk_overlap: int,
+    index: VectorIndex | None = None,
+) -> IndexState:
+    """Rebuild an index from stored chunks and embeddings (see docstore.py):
+    the keyword statistics are derived data and the vector index is rebuilt
+    unless a saved one is supplied. No extraction, chunking or embedding runs."""
+    return IndexState(
+        store=VectorStore(chunks, embeddings, index=index),
+        num_pages=num_pages,
         num_chunks=len(chunks),
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -135,15 +164,38 @@ def retrieve(queries: list[str], states: list[IndexState], top_k: int = DEFAULT_
         return []
     query_vectors = embedder.embed(queries)
     term_indexes = [state.store.terms for state in states]
-    rankings, similarities = [], []
+    rankings = []
     for query, vector in zip(queries, query_vectors):
-        similarity = np.concatenate([state.store.embeddings @ vector for state in states])
-        similarities.append(similarity)
         rankings.append(ranking(bm25_scores(query, term_indexes)))
-        rankings.append(ranking(similarity))
-    best_similarity = np.max(similarities, axis=0)
+        rankings.append(ranking(_dense_similarity(states, vector)))
     order = reciprocal_rank_fusion(rankings)[:top_k]
-    return [{**chunks[i], "score": float(best_similarity[i])} for i in order]
+    # The score shown to the user is always the exact cosine to the closest
+    # query, whichever index found the chunk.
+    starts = np.cumsum([0] + [len(state.store.chunks) for state in states])
+    rows = []
+    for i in order:
+        which = int(np.searchsorted(starts, i, side="right")) - 1
+        rows.append(states[which].store.embeddings[i - starts[which]])
+    exact = np.max(np.stack(rows) @ query_vectors.T, axis=1)
+    return [{**chunks[i], "score": float(s)} for i, s in zip(order, exact)]
+
+
+def _dense_similarity(states: list[IndexState], vector: np.ndarray) -> np.ndarray:
+    """Cosine similarity of one query to every chunk of every document, in
+    document order. Exact indexes score every chunk; an approximate index
+    scores only its nearest DENSE_CANDIDATES (the rest get -1 and sort last),
+    which is all the rank fusion looks at."""
+    parts = []
+    for state in states:
+        index = state.store.index
+        if index.kind == "flat":
+            parts.append(state.store.embeddings @ vector)
+            continue
+        scores = np.full(len(state.store.chunks), -1.0, dtype="float32")
+        found_scores, found_ids = index.search(vector, DENSE_CANDIDATES)
+        scores[found_ids] = found_scores
+        parts.append(scores)
+    return np.concatenate(parts)
 
 
 def is_overview_question(question: str) -> bool:
@@ -178,8 +230,10 @@ def gather_sources(
 
     A whole-document question ("what is this paper about?") is routed to an
     overview sample of each document; anything else goes through hybrid
-    retrieval, which for a follow-up also searches "previous question + this
-    one", so "what about its moons?" still finds the passages about "it".
+    retrieval. A follow-up is also searched as a standalone query built from
+    the earlier questions (conversation.py), so "what about its moons?" still
+    finds the passages about "it"; that query only steers retrieval and is
+    never evidence.
     """
     states = index_state if isinstance(index_state, list) else [index_state]
     recent = (history or [])[-MAX_HISTORY_TURNS:]
@@ -189,9 +243,7 @@ def gather_sources(
         sources = [{**c, "score": None} for state in states for c in overview_sample(state, per_doc)]
         return sources, recent
 
-    queries = [question]
-    if recent:
-        queries.append(f"{recent[-1]['question']} {question}")
+    queries = conversation.resolve(question, recent).queries
     sources = retrieve(queries, states, top_k=top_k)
     # Abstention: if every retrieved passage is below the score floor,
     # return no sources so the LLM sees "(no passages retrieved)" and
@@ -233,17 +285,15 @@ def answer_stream(
 
 
 def summarize(index_state: IndexState) -> dict:
-    """Summarize one document from evenly spaced chunks across it (a full
-    map-reduce over every chunk would cost one LLM call per chunk, which
-    free-tier rate limits don't allow for larger PDFs).
+    """Summarize one document by reading all of it, within an LLM-call budget
+    (hierarchical map-reduce -- see summarizer.py). A short document takes one
+    call; a long one is summarised in batches and merged. If the document is
+    too long for the budget the result says which part was not read.
 
-    Returns {"summary": str, "sources": [...]} in the same shape as answer()."""
-    chunks = index_state.store.chunks
-    count = min(SUMMARY_SAMPLE_CHUNKS, len(chunks))
-    step = len(chunks) / count
-    sample = [chunks[int(i * step)] for i in range(count)]
-    summary_text = llm_client.summarize(sample)
-    return {"summary": summary_text, "sources": [{**c, "score": None} for c in sample]}
+    Returns {"summary": str, "sources": [...], "coverage": {...}}; the first two
+    are the same shape as answer()."""
+    result = summarizer.summarize_document(index_state.store.chunks)
+    return {"summary": result.summary, "sources": result.sources, "coverage": result.coverage}
 
 
 def suggest_questions(index_state: IndexState) -> list[str]:

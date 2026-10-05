@@ -57,23 +57,40 @@ def test_single_document_retrieval_is_the_measured_hybrid(sample_pdf_bytes):
     assert "doc" not in got[0]
 
 
-def test_follow_up_retrieval_also_uses_the_previous_question(sample_pdf_bytes, monkeypatch):
+def test_follow_up_retrieval_also_searches_a_standalone_version(sample_pdf_bytes, monkeypatch):
     seen = {}
     monkeypatch.setattr(pipeline, "retrieve", lambda queries, states, top_k: seen.setdefault("q", queries) and [])
     monkeypatch.setattr(pipeline.llm_client, "ask", lambda q, p, history=None: "ok")
     state = pipeline.ingest(sample_pdf_bytes)
     history = [{"question": "Tell me about Saturn", "answer": "Saturn has rings."}]
     pipeline.answer("How many moons does it have?", state, history=history)
-    assert seen["q"] == ["How many moons does it have?", "Tell me about Saturn How many moons does it have?"]
+    # the original question first, the pronoun resolved from the earlier *question*, then the old concatenation
+    assert seen["q"] == [
+        "How many moons does it have?",
+        "How many moons does Saturn have?",
+        "Tell me about Saturn How many moons does it have?",  # v3 concatenation, kept as a safety net
+    ]
 
 
-def test_summarize_samples_chunks_across_the_document(sample_pdf_bytes, monkeypatch):
-    monkeypatch.setattr(pipeline.llm_client, "summarize", lambda passages: f"{len(passages)} passages")
+def test_a_standalone_question_after_a_topic_change_is_searched_alone(sample_pdf_bytes, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pipeline, "retrieve", lambda queries, states, top_k: seen.setdefault("q", queries) and [])
+    monkeypatch.setattr(pipeline.llm_client, "ask", lambda q, p, history=None: "ok")
+    state = pipeline.ingest(sample_pdf_bytes)
+    history = [{"question": "Tell me about Saturn", "answer": "Saturn has rings."}]
+    pipeline.answer("Which planet is the hottest in the Solar System?", state, history=history)
+    assert seen["q"] == ["Which planet is the hottest in the Solar System?"]
+
+
+def test_summarize_reads_every_chunk_of_a_short_document(sample_pdf_bytes, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        pipeline.llm_client, "summarize", lambda passages, timeout=30, complete=False: seen.update(n=len(passages), complete=complete) or "ok"
+    )
     state = pipeline.ingest(sample_pdf_bytes, chunk_size=200, chunk_overlap=20)
     result = pipeline.summarize(state)
-    pages = {s["page"] for s in result["sources"]}
-    assert len(result["sources"]) == min(pipeline.SUMMARY_SAMPLE_CHUNKS, state.num_chunks)
-    assert pages == {1, 2, 3, 4}
+    assert seen["complete"] is True and result["coverage"]["complete"] is True
+    assert result["summary"] == "ok" and len(result["sources"]) == min(12, state.num_chunks)
 
 
 # --- Whole-document questions are routed away from similarity search -------

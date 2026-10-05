@@ -32,7 +32,12 @@ BASE_URL = f"http://127.0.0.1:{PORT}"
 # (python-dotenv never overrides variables that are already set).
 PROVIDER_KEYS = (
     "LLM_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY",
-    "NVIDIA_API_KEY", "HF_TOKEN", "GEMINI_API_KEY",
+    "NVIDIA_API_KEY", "HF_TOKEN", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+    "ANTHROPIC_API_KEY", "COHERE_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY",
+    "DEEPSEEK_API_KEY", "XAI_API_KEY", "TOGETHER_API_KEY", "LLM_ROUTES",
+    # shared state and sign-in: the e2e server must be self-contained, never
+    # touching a developer's Redis or Firebase project from a local .env
+    "REDIS_URL", "FIREBASE_PROJECT_ID", "FIREBASE_API_KEY", "FIREBASE_AUTH_DOMAIN",
 )
 
 

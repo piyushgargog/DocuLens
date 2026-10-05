@@ -123,7 +123,7 @@ def fake_llm(monkeypatch):
         return f"answer to: {question}"
 
     monkeypatch.setattr(llm_client, "ask", fake_ask)
-    monkeypatch.setattr(llm_client, "summarize", lambda passages, timeout=30: "a summary")
+    monkeypatch.setattr(llm_client, "summarize", lambda passages, timeout=30, **kw: "a summary")
     return calls
 
 
