@@ -9,7 +9,10 @@ WORKDIR /app
 # tesseract is the OCR engine used for scanned / image-only PDFs (pytesseract
 # is just a wrapper). --no-install-recommends + the English data only keeps
 # this to ~a few tens of MB; the apt lists are removed in the same layer.
+# `apt-get upgrade` first: the base image lags Debian's security updates (Trivy found
+# a HIGH libpcre2 CVE with a fix already published).
 RUN apt-get update \
+    && apt-get -y upgrade \
     && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
@@ -24,12 +27,18 @@ RUN pip install --no-cache-dir --upgrade pip "setuptools>=83"
 # installing the CPU build here first means sentence-transformers (pulled
 # in by requirements.txt below) finds torch already satisfied and never
 # reaches for the CUDA-bundled variant.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir "torch>=2.13.0" --index-url https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+# pip, setuptools and wheel are build tools. They bundle their own copies of urllib3,
+# msgpack and setuptools that trail upstream and that Trivy reports as HIGH, yet
+# nothing here imports them at runtime, so they are removed from the final image.
+# (deploy/Dockerfile.update restores pip with `ensurepip` when it needs it.)
+RUN pip uninstall -y pip setuptools wheel
 
 # Run as an unprivileged user, not root: defence in depth, so a hypothetical
 # code-execution bug in a dependency isn't already root inside the container.
@@ -40,11 +49,11 @@ ENV HF_HOME=/app/.cache/huggingface XDG_CACHE_HOME=/app/.cache
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/.cache/huggingface \
     && chown -R appuser:appuser /app
-USER appuser
+USER 10001
 
 EXPOSE 8000
 
 # Docker marks the container unhealthy if the app stops answering (no LLM call).
-HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

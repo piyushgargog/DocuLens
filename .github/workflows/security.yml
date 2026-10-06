@@ -1,0 +1,118 @@
+name: Security
+
+# Static analysis, secret scanning, dependency and workflow audits. Every tool
+# runs and its result is evaluated by scripts/release_gate.py in the last job:
+# a scanner that crashes fails the build (it is never treated as "no findings").
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Bandit
+        run: |
+          pip install bandit==1.9.4
+          mkdir -p out
+          bandit -r . -x ./tests,./venv,./tools,./static -f json -o out/bandit.json --exit-zero
+          bandit -r . -x ./tests,./venv,./tools,./static -ll -q
+      - name: Semgrep (python, OWASP top ten, secrets)
+        run: |
+          pip install semgrep==1.179.0
+          semgrep scan --config p/python --config p/owasp-top-ten --config p/secrets --metrics off --error --severity ERROR --exclude tests --exclude static/firebase-auth.js --json -o out/semgrep.json .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: python-static
+          path: out/
+
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: zizmor (workflow security audit)
+        run: |
+          pip install zizmor==1.30.1
+          zizmor --min-severity medium .github/workflows
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0  # scan the whole history, not just the tip
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Trivy filesystem scan (vulnerabilities, secrets, misconfiguration)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+  api-fuzzing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+      - name: Install
+        run: |
+          pip install "torch>=2.13.0" --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt schemathesis==4.29.3
+      - name: Start the app and fuzz every operation from its OpenAPI document
+        env:
+          FIREBASE_PROJECT_ID: ci-project
+          FIREBASE_API_KEY: ci-key
+          LOG_LEVEL: WARNING
+        run: |
+          python -c "import json, main; open('openapi.json', 'w').write(json.dumps(main.app.openapi()))"
+          uvicorn main:app --port 8141 &
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:8141/api/health && break; sleep 2; done
+          st run openapi.json --url http://127.0.0.1:8141 --max-examples 50 --checks not_a_server_error --workers 1

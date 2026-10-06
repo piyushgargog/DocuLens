@@ -13,11 +13,17 @@ history behind each choice is in `DECISIONS.md`.
 
 | Module | Responsibility |
 |---|---|
-| `main.py` | API, sessions, rate limits, concurrency, security middleware. The only file that imports FastAPI. |
+| `main.py` | API, document sessions, rate limits, concurrency, security middleware. The only file that imports FastAPI. |
+| `store.py` | Async key-value store for logins and rate limits: `RedisStore` (Lua sliding-window limiter, TTLs), `MemoryStore` (default), and `ResilientStore` (Redis with in-process fallback on errors). |
+| `auth.py` | Firebase ID-token verification (PyJWT + Google's published certificates) and the guest / user tiers. No FastAPI import. |
 | `document_loader.py`, `pdf_loader.py` | Pick a loader by extension. PDFs are read per page with PyMuPDF, and a PDF with no text layer is OCR'd (Tesseract, ≤30 pages, ~144 DPI). `.txt`/`.md`/`.docx` are split into ~2500-character pseudo-pages. |
-| `chunker.py` | Character sliding window per page (800/150). Each chunk keeps its page. |
-| `embedder.py` | `all-MiniLM-L6-v2`, L2-normalised 384-dim vectors. Loaded once per process, at startup when `PREFETCH_MODEL=1`. |
-| `vector_store.py` | One FAISS `IndexFlatIP` per document (inner product = cosine). |
+| `chunker.py` | Default: structure-aware chunks (headings, tables, whole sentences, section path, <= 800 chars, sentence overlap); `CHUNKER=char` is the old 800/150 character window. Each chunk keeps exactly one page. |
+| `embedder.py` | `all-MiniLM-L6-v2`, L2-normalised 384-dim vectors. Loaded once per process (at startup when `PREFETCH_MODEL=1`); a bounded in-process cache serves repeated texts. |
+| `vector_index.py`, `vector_store.py` | `VectorIndex` interface with `FlatIndex` (exact `IndexFlatIP`) and `HNSWIndex`; `auto` switches at `ANN_THRESHOLD` vectors. `VectorStore` = chunks + embeddings + BM25 statistics + index. |
+| `conversation.py` | Follow-up resolver: pronouns/ellipsis from earlier questions (deterministic), validated optional LLM rewrite for hard cases, v3 concatenation as safety net. A rewrite is a search query, never evidence. |
+| `summarizer.py` | Map-reduce summary: de-overlap, batch by section/page range, parallel batch summaries, tree merge, <= `SUMMARY_MAX_LLM_CALLS`, coverage reporting. |
+| `docstore.py` | Per-user persisted documents: metadata hash, compressed chunk + embedding blobs behind an `ArtifactStore` (Redis parts or a directory), history; ownership by `sha256(uid)`. |
+| `llm_adapters.py` | One adapter per chat-API family (openai, anthropic, gemini, cohere): request shape, reply parsing, SSE streaming. |
 | `retriever.py` | BM25 and reciprocal rank fusion. |
 | `pipeline.py` | `ingest`, `retrieve`, `gather_sources`, `answer`, `answer_stream`, `summarize`, `suggest_questions`. |
 | `llm_client.py`, `providers.py` | Prompts, OpenAI-compatible calls over `requests`, streaming, provider failover. |
@@ -49,8 +55,23 @@ POST /api/ask(/stream) → gather_sources
 - `MAX_TOTAL_CHUNKS` (75,000) caps indexed chunks across all sessions. It is
   checked before embedding and again before storing. A new session is
   registered only after its first document is stored.
-- Uploads are never written to disk. Only extracted text and embeddings stay
-  in memory.
+- **Shared state** (`store.py`, Redis when `REDIS_URL` is set): login sessions
+  (`login:<id>`, 7 days, renewed hourly when used), rate-limit windows
+  (`rl:<u:sub|ip:addr>:<bucket>`) and, for signed-in users, documents:
+  `u:<owner>:docs` (hash, one field per document), `a:<owner>:<doc>:chunks|emb|index`
+  (blobs in <= 400 KB parts), `u:<owner>:hist`, all expiring after
+  `DOC_RETENTION_DAYS`. `<owner>` is `sha256(verified uid)`. Each request re-reads
+  the user's document list, so a document added or deleted on another instance
+  shows up immediately; indexes load lazily into a bounded cache (least recently
+  used evicted under memory pressure) and are rebuilt from the stored
+  embeddings. A document whose blobs are missing or fail their SHA-256 is removed
+  and reported (the upload itself is never kept). Guests' documents never leave
+  process memory.
+- **Tiers** apply only when Firebase sign-in is configured. Guests: 1 document,
+  5 questions and 3 uploads per day per IP, memory only. Signed in: 5 documents,
+  200 questions and 30 uploads per day per account, saved. Sign-out drops what
+  this process holds for the browser; saved documents stay for the next sign-in.
+- The original upload is never stored; only extracted text and embeddings are kept.
 - CPU and LLM work runs in worker threads. Semaphores allow 4 concurrent LLM
   calls and 2 ingestions; a request that waits more than 20s gets a 503
   "busy" response.
@@ -116,7 +137,8 @@ POST /api/ask(/stream) → gather_sources
 
 | Threat | Control |
 |---|---|
-| Quota/CPU abuse | Per-IP limits: LLM 10/min and 100/h, uploads 10 per 10 min. `X-Real-IP` is trusted only from `TRUSTED_PROXIES`. |
+| Quota/CPU abuse | Limits per IP (per account when signed in): LLM 10/min and 100/h, uploads 10 per 10 min, plus daily guest/user caps. `X-Real-IP` is trusted only from `TRUSTED_PROXIES`. |
+| Forged / replayed sign-in | ID token verified (RS256 only, audience = our project, issuer, expiry, verified e-mail), used once; our own HttpOnly cookie carries the session; `/api/login` is rate-limited and CSRF-guarded |
 | Memory exhaustion | 25MB uploads (never read past), 1500 chunks/doc (~360 pages, checked before embedding), `MAX_TOTAL_CHUNKS`, 5 docs, 50 sessions |
 | Bad uploads | `%PDF-` signature for PDFs; filename reduced to basename, control characters stripped, 120 characters |
 | XSS / clickjacking | CSP `'self'` with no inline code, `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `textContent` only |

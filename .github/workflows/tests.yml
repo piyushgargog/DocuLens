@@ -3,25 +3,33 @@ name: Tests
 # Runs the test suite that doesn't require an LLM API key. Tests that call a
 # real LLM (llm_client, pipeline end-to-end, prompt-injection checks) are
 # gated behind LLM_API_KEY with pytest.mark.skipif and self-skip here, since
-# no such secret is configured for this workflow — see CONTRIBUTING.md.
+# no such secret is configured for this workflow -- see CONTRIBUTING.md.
+# Every third-party action is pinned to a full commit SHA (Dependabot keeps
+# the comments and SHAs current).
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
-# Least-privilege default: this workflow only reads the repo and runs tests,
-# it never needs to write anything.
+# Least-privilege default: this workflow only reads the repo and runs tests.
 permissions:
   contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: "pip"
@@ -34,7 +42,7 @@ jobs:
         # keeps sentence-transformers from pulling PyPI's default torch
         # build, which bundles several hundred MB of unused NVIDIA/CUDA
         # packages on Linux and slows every CI run down for nothing.
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+        run: pip install "torch>=2.13.0" --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
         # The runner's Python ships an outdated setuptools with known
@@ -47,20 +55,30 @@ jobs:
         # Fails the build (and so blocks merging) if any installed package has
         # a published advisory -- the same environment the tests just ran in.
         run: |
-          pip install pip-audit
+          pip install pip-audit==2.10.0
           pip-audit --progress-spinner off
 
-      - name: Run tests
+      - name: Lint, security rules and types
+        run: |
+          pip install ruff==0.16.10 mypy==2.4.0 bandit==1.9.4
+          ruff check .
+          mypy main.py llm_client.py pipeline.py auth.py store.py docstore.py vector_index.py vector_store.py conversation.py summarizer.py chunker.py pdf_loader.py document_loader.py llm_adapters.py llm_errors.py providers.py embedder.py retriever.py observability.py --ignore-missing-imports --follow-imports=silent
+          bandit -q -r auth.py store.py docstore.py main.py pipeline.py chunker.py conversation.py summarizer.py pdf_loader.py document_loader.py embedder.py llm_client.py llm_adapters.py llm_errors.py providers.py vector_index.py vector_store.py retriever.py observability.py
+
+      - name: Run tests (unit, security regression, property-based, API fuzzing)
         run: pytest -v
 
   e2e:
     # Browser end-to-end checks (tests/e2e): real server + Playwright Chromium,
     # LLM endpoints faked in the browser, so no API key is needed.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: "pip"
@@ -69,7 +87,7 @@ jobs:
             requirements-dev.txt
 
       - name: Install CPU-only PyTorch
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+        run: pip install "torch>=2.13.0" --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies and Chromium
         run: |

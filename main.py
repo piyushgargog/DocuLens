@@ -8,6 +8,7 @@ pipeline.ingest()/answer()/summarize() to HTTP and holds per-session state.
 """
 
 import asyncio
+import hashlib
 import ipaddress
 import json
 import os
@@ -15,23 +16,27 @@ import re
 import secrets
 import threading
 import time
-from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Any
 from urllib.parse import urlsplit
 
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.concurrency import iterate_in_threadpool, run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+import auth
+import docstore
 import document_loader
 import embedder
 import observability
 import pipeline
 import providers
+import store
 from observability import log, new_request_id, request_id_var
 
 observability.setup_logging()
@@ -43,7 +48,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 # The release version. static/index.html repeats it (asset ?v= query, footer,
 # release link) and tests/test_api.py fails if the two ever disagree.
-APP_VERSION = "3.7.0"
+APP_VERSION = "4.0.0-beta.1"
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB -- unchanged from the previous UI's limit
 MAX_QUESTION_CHARS = 1000  # unchanged from the previous UI's limit
@@ -78,7 +83,12 @@ except ValueError:
 RATE_LIMITS = {
     "llm": [(10, 60), (100, 60 * 60)],  # /api/ask, /api/summary, /api/suggestions
     "ingest": [(10, 10 * 60)],  # /api/ingest
+    "login": [(20, 10 * 60)],  # /api/login (each hit may fetch Google's signing certificates)
 }
+
+# Login sessions and rate-limit counters live here: Redis when
+# REDIS_URL is set, in-process otherwise (see store.py). Documents do not.
+_store = store.make_store()
 
 # CIDR networks whose X-Real-IP header is trusted for rate limiting.
 # Default: loopback only (safe for Nginx on the same host). Behind a
@@ -121,6 +131,55 @@ SECURITY_HEADERS = {
     "Cross-Origin-Resource-Policy": "same-origin",
 }
 
+def _security_headers() -> dict:
+    """SECURITY_HEADERS, widened only as far as Firebase sign-in needs when it is
+    configured: the SDK is served from this origin, but it talks to Google's
+    identity APIs, loads Google's gapi script and opens the sign-in popup (which
+    COOP `same-origin` would sever, hence `same-origin-allow-popups`)."""
+    headers = dict(SECURITY_HEADERS)
+    csp = headers["Content-Security-Policy"]
+    frames: list[str] = []
+    if auth.enabled():
+        domain = auth.web_config()["authDomain"]
+        csp = csp.replace("script-src 'self'", "script-src 'self' https://apis.google.com")
+        csp = csp.replace(
+            "connect-src 'self'",
+            "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com",
+        )
+        frames += [f"https://{domain}", "https://accounts.google.com"]
+        headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
+    if _turnstile():
+        # Cloudflare Turnstile: its script and its challenge frame, nothing else.
+        csp = csp.replace("script-src 'self'", "script-src 'self' https://challenges.cloudflare.com", 1)
+        frames.append("https://challenges.cloudflare.com")
+    if frames:
+        csp += "; frame-src " + " ".join(frames)
+    headers["Content-Security-Policy"] = csp
+    return headers
+
+
+def _turnstile() -> tuple[str, str] | None:
+    """(site key, secret) of the Cloudflare Turnstile widget guests must pass, or
+    None when it is not configured (the check is then simply off)."""
+    site = os.environ.get("TURNSTILE_SITE_KEY", "").strip()
+    secret = os.environ.get("TURNSTILE_SECRET_KEY", "").strip()
+    return (site, secret) if site and secret else None
+
+
+HUMAN_TTL = 3600  # a passed Turnstile check is good for an hour
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+
+def _verify_turnstile(secret: str, token: str, ip: str) -> bool:
+    try:
+        reply = requests.post(
+            TURNSTILE_VERIFY_URL, data={"secret": secret, "response": token, "remoteip": ip}, timeout=6
+        )
+        return reply.status_code == 200 and reply.json().get("success") is True
+    except (requests.RequestException, ValueError):
+        return False
+
+
 # JSON request bodies are a question and a few ids; anything bigger is abuse.
 MAX_JSON_BYTES = 16 * 1024
 
@@ -146,6 +205,7 @@ async def _sweep_expired_sessions() -> None:
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
         _prune_sessions()
+        await _store.sweep()
 
 
 @asynccontextmanager
@@ -161,11 +221,17 @@ async def lifespan(app: FastAPI):
     if embedder.prefetch_enabled():
         # Moves the ~2s model load from the first upload to startup.
         await run_in_threadpool(embedder.prefetch)
+    log.info(
+        "State store: %s; Firebase sign-in %s",
+        "Redis" if isinstance(_store, store.ResilientStore) else "in-process memory",
+        "on (guest limits apply)" if auth.enabled() else "off (no tiers)",
+    )
     sweeper = asyncio.create_task(_sweep_expired_sessions())
     try:
         yield
     finally:
         sweeper.cancel()
+        await _store.close()
 
 
 # The interactive API docs (/docs, /redoc, /openapi.json) are off: they would
@@ -212,14 +278,10 @@ async def refresh_session_cookie(request: Request, call_next):
     cookie_name = _cookie_name(request)
     session_id = request.cookies.get(cookie_name, "")
     if session_id and session_id in _sessions:
-        response.set_cookie(
-            cookie_name,
-            session_id,
-            httponly=True,
-            samesite="lax",
-            secure=_is_https(request),
-            max_age=SESSION_TTL_SECONDS,
-        )
+        _set_cookie(response, cookie_name, session_id, request, SESSION_TTL_SECONDS)
+    if await _current_user(request):
+        login_cookie = _auth_cookie_name(request)
+        _set_cookie(response, login_cookie, request.cookies[login_cookie], request, auth.LOGIN_TTL)
     return response
 
 
@@ -234,7 +296,7 @@ async def response_headers(request: Request, call_next):
     costs only a 304.
     """
     response = await call_next(request)
-    response.headers.update(SECURITY_HEADERS)
+    response.headers.update(_security_headers())
     if _is_https(request):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     if not request.url.path.startswith("/api/"):
@@ -270,51 +332,204 @@ async def request_context(request: Request, call_next):
 
 @dataclass
 class Session:
+    """One workspace: a guest's browser session, or a signed-in user's
+    persisted documents (`owner` set).
+
+    `docs` holds the *loaded* indexes. A guest's documents live only here. A
+    signed-in user's are stored durably (docstore.py) and described by `meta`;
+    `docs` is then just a cache that is filled lazily and may be emptied under
+    memory pressure or after a restart."""
+
     docs: dict[str, pipeline.IndexState] = field(default_factory=dict)  # doc_id -> index
-    history: list[dict] = field(default_factory=list)  # [{"question", "answer"}], oldest first
+    history: list[dict] = field(default_factory=list)  # guests only; users' history is in the repository
     last_used: float = field(default_factory=time.time)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    owner: str | None = None  # docstore namespace for a signed-in user; None for a guest
+    meta: dict[str, docstore.DocMeta] = field(default_factory=dict)
+    load_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
-# In-memory sessions keyed by a random cookie value. A single-process
-# in-memory store is the simplest sensible choice at this project's scale (a
-# personal/portfolio tool, not a multi-instance service). Sessions are lost on
-# restart and are not shared across processes -- see README "Known limitations".
+# Guest sessions, in process memory keyed by a random cookie value: a guest's
+# single document is deliberately ephemeral (lost on restart, not shared).
 _sessions: dict[str, Session] = {}
+# Signed-in users' workspaces, keyed by their docstore owner namespace. Only a
+# cache: the documents themselves are persisted and re-synced on every request.
+_user_sessions: dict[str, Session] = {}
 
 
 def _prune_sessions() -> None:
     now = time.time()
-    expired = []
-    for sid, session in list(_sessions.items()):
-        with session.lock:
-            if now - session.last_used > SESSION_TTL_SECONDS:
-                expired.append(sid)
-    for sid in expired:
-        _sessions.pop(sid, None)
-    while len(_sessions) > MAX_SESSIONS:
-        oldest = min(
-            _sessions,
-            key=lambda sid: _sessions[sid].last_used,
-        )
-        _sessions.pop(oldest, None)
-    # Rate-limit history older than the longest window is no longer needed.
-    longest = max(window for limits in RATE_LIMITS.values() for _, window in limits)
-    for key in [k for k, hits in _rate_log.items() if not hits or now - hits[-1] > longest]:
-        del _rate_log[key]
+    for table in (_sessions, _user_sessions):
+        expired = []
+        for sid, session in list(table.items()):
+            with session.lock:
+                if now - session.last_used > SESSION_TTL_SECONDS:
+                    expired.append(sid)
+        for sid in expired:
+            table.pop(sid, None)
+        while len(table) > MAX_SESSIONS:
+            oldest = min(table, key=lambda sid: table[sid].last_used)
+            table.pop(oldest, None)
 
 
 def _total_chunks() -> int:
-    """Current total chunks across all sessions."""
+    """Chunks currently held in memory across all sessions."""
     total = 0
-    for session in list(_sessions.values()):
+    for session in [*_sessions.values(), *_user_sessions.values()]:
         with session.lock:
             total += sum(state.num_chunks for state in session.docs.values())
     return total
 
 
-# (client, bucket) -> timestamps of recent allowed requests, oldest first.
-_rate_log: dict[tuple[str, str], deque] = {}
+def _make_room(needed: int, keep: Session) -> bool:
+    """Free memory for `needed` chunks by dropping the loaded indexes of other
+    signed-in users, least recently used first. Safe because theirs are
+    persisted and reload on demand; a guest's are never touched."""
+    free = MAX_TOTAL_CHUNKS - _total_chunks()
+    for other in sorted((u for u in _user_sessions.values() if u is not keep), key=lambda u: u.last_used):
+        if free >= needed:
+            break
+        with other.lock:
+            free += sum(state.num_chunks for state in other.docs.values())
+            other.docs.clear()
+    return free >= needed
+
+
+def _repo() -> docstore.DocumentRepository:
+    return docstore.DocumentRepository(_store)
+
+
+async def _user_session(uid: str) -> Session:
+    """The signed-in user's workspace, synced with what is stored right now:
+    documents added or removed through another instance appear or disappear."""
+    owner = docstore.owner_key(uid)
+    metas = await _repo().list_docs(owner)
+    session = _user_sessions.get(owner)
+    if session is None:
+        session = _user_sessions[owner] = Session(owner=owner)
+        _prune_sessions()
+    with session.lock:
+        session.last_used = time.time()
+        session.meta = metas
+        for doc_id in [d for d in session.docs if d not in metas]:
+            del session.docs[doc_id]
+    return session
+
+
+def _doc_count(session: Session) -> int:
+    with session.lock:
+        return len(session.meta) if session.owner else len(session.docs)
+
+
+def _doc_ids(session: Session) -> list[str]:
+    with session.lock:
+        return list(session.meta) if session.owner else list(session.docs)
+
+
+class StorageUnavailable(Exception):
+    """Saved documents can't be read right now (the store is degraded)."""
+
+
+class MemoryFull(Exception):
+    """No room to load another document into memory."""
+
+
+async def _load_states(session: Session, doc_ids: list[str]) -> tuple[list[pipeline.IndexState], list[str]]:
+    """The indexes for `doc_ids` (ids this workspace does not own are ignored)
+    and the names of any saved documents that could not be restored.
+
+    A guest's are already in memory. A signed-in user's are loaded from storage
+    on first use; a document whose artifacts are missing or corrupt is removed
+    (it cannot be rebuilt: the upload itself is never kept) and reported."""
+    if not session.owner:
+        with session.lock:
+            return [session.docs[d] for d in doc_ids if d in session.docs], []
+    states, lost = [], []
+    async with session.load_lock:
+        for doc_id in doc_ids:
+            with session.lock:
+                state, meta = session.docs.get(doc_id), session.meta.get(doc_id)
+            if meta is None:
+                continue
+            if state is None:
+                if not _make_room(meta.num_chunks, keep=session):
+                    raise MemoryFull()
+                try:
+                    loaded = await _repo().load(session.owner, meta)
+                except (docstore.DocumentMissingError, docstore.DocumentCorruptError) as e:
+                    if getattr(_store, "degraded", False):
+                        raise StorageUnavailable() from e  # not proof the document is gone
+                    log.warning("Removing unrecoverable document (%s)", type(e).__name__)
+                    await _repo().delete(_owner_of(session), doc_id)
+                    with session.lock:
+                        session.meta.pop(doc_id, None)
+                        session.docs.pop(doc_id, None)
+                    lost.append(meta.name)
+                    continue
+                state = await run_in_threadpool(
+                    pipeline.restore,
+                    loaded.chunks,
+                    loaded.embeddings,
+                    meta.name,
+                    meta.num_pages,
+                    meta.chunk_size,
+                    meta.chunk_overlap,
+                    loaded.saved_index,
+                )
+                with session.lock:
+                    session.docs[doc_id] = state
+            states.append(state)
+    return states, lost
+
+
+def _restore_failure(e: Exception) -> JSONResponse:
+    """The HTTP error when saved documents could not be loaded right now."""
+    if isinstance(e, MemoryFull):
+        return _error("The server's document memory is full. Try again in a moment.", 503)
+    return _error("Your saved documents are temporarily unavailable. Please try again shortly.", 503)
+
+
+def _lost_documents_error(lost: list[str]) -> JSONResponse | None:
+    """The 409 for saved documents that could not be restored (and were removed), or None."""
+    if not lost:
+        return None
+    names = ", ".join(lost)[:200]
+    return _error(f"These saved documents could no longer be restored and were removed: {names}. Please upload them again.", 409)
+
+
+def _owner_of(session: Session) -> str:
+    """The storage namespace of a signed-in user's workspace."""
+    if session.owner is None:
+        raise RuntimeError("not a saved workspace")
+    return session.owner
+
+
+async def _history(session: Session, chat_id: str | None = None) -> list[dict]:
+    """The turns of the conversation being continued: a signed-in user's saved chat
+    (empty for a new one), or a guest's in-memory conversation."""
+    if session.owner:
+        return await _repo().get_chat_history(session.owner, chat_id) if chat_id else []
+    with session.lock:
+        return list(session.history)
+
+
+async def _record_turn(
+    session: Session, turn: dict, history: list[dict] | None = None, chat: dict | None = None
+) -> dict | None:
+    """Add a turn to the conversation. A signed-in user's turn goes into their chat,
+    which is created from the question if this is a new one (the chat is returned so
+    the browser can show it); `history` is what was already read, so it is one write.
+    Returns the chat for a signed-in user, None for a guest."""
+    if session.owner:
+        owner = session.owner
+        if chat is None:
+            chat = await _repo().create_chat(owner, turn["question"])
+        await _repo().save_chat_turns(owner, chat, [*(history or []), turn])
+        return chat
+    with session.lock:
+        session.history.append(turn)
+        del session.history[:-MAX_STORED_TURNS]
+    return None
 
 
 def _client_ip(request: Request) -> str:
@@ -331,32 +546,41 @@ def _client_ip(request: Request) -> str:
         peer_addr = ipaddress.ip_address(peer)
     except ValueError:
         return peer
+    address = peer
     if any(peer_addr in net for net in _TRUSTED_PROXY_NETS):
-        return request.headers.get("x-real-ip", peer)
-    return peer
+        address = request.headers.get("x-real-ip", peer)
+    return _rate_key(address)
 
 
-def _rate_limited(request: Request, bucket: str) -> JSONResponse | None:
+def _rate_key(address: str) -> str:
+    """One IPv6 subscriber holds a whole /64, so counting single addresses would
+    let a guest dodge the limit by rotating through it. Count the /64 instead."""
+    try:
+        ip = ipaddress.ip_address(address.strip())
+    except ValueError:
+        return address[:64]
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False).network_address) + "/64"
+    return str(ip)
+
+
+async def _rate_limited(
+    request: Request, bucket: str, limits: list[tuple[int, int]] | None = None, message: str | None = None
+) -> JSONResponse | None:
     """A 429 response if this client is over any of the bucket's limits,
-    otherwise None (and the request is counted)."""
-    now = time.time()
-    hits = _rate_log.setdefault((_client_ip(request), bucket), deque())
-    longest = max(window for _, window in RATE_LIMITS[bucket])
-    while hits and now - hits[0] > longest:
-        hits.popleft()
-    for limit, window in RATE_LIMITS[bucket]:
-        recent = [t for t in hits if now - t <= window]
-        if len(recent) >= limit:
-            retry_after = int(window - (now - recent[0])) + 1
-            response = _error(
-                f"Too many requests. Please wait about {max(1, round(retry_after / 60))} "
-                f"minute(s) and try again.",
-                429,
-            )
-            response.headers["Retry-After"] = str(retry_after)
-            return response
-    hits.append(now)
-    return None
+    otherwise None (and the request is counted). Signed-in users are counted
+    per account, everyone else per IP address."""
+    who = await _current_user(request)
+    identity = f"u:{who['sub']}" if who else f"ip:{_client_ip(request)}"
+    retry_after = await _store.rate_hit(f"rl:{identity}:{bucket}", limits or RATE_LIMITS[bucket])
+    if not retry_after:
+        return None
+    wait = f"about {max(1, round(retry_after / 60))} minute(s)" if retry_after < 3600 else f"about {round(retry_after / 3600)} hour(s)"
+    response = _error(message or f"Too many requests. Please wait {wait} and try again.", 429)
+    response.headers["Retry-After"] = str(retry_after)
+    return response
 
 
 def _cookie_name(request: Request) -> str:
@@ -367,12 +591,107 @@ def _cookie_name(request: Request) -> str:
     return "__Host-session" if _is_https(request) else "session_id"
 
 
-def _get_session(request: Request) -> Session | None:
+async def _get_session(request: Request) -> Session | None:
+    """The caller's workspace: a signed-in user's persisted one, otherwise the
+    guest session named by the cookie (None if there isn't one yet)."""
+    user = await _current_user(request)
+    if user:
+        return await _user_session(user["sub"])
     session = _sessions.get(request.cookies.get(_cookie_name(request), ""))
     if session is not None:
         with session.lock:
             session.last_used = time.time()
     return session
+
+
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
+
+
+def _auth_cookie_name(request: Request) -> str:
+    return "__Host-auth" if _is_https(request) else "auth_id"
+
+
+def _set_cookie(response, name: str, value: str, request: Request, max_age: int) -> None:
+    response.set_cookie(name, value, httponly=True, samesite="lax", secure=_is_https(request), max_age=max_age)
+
+
+def _drop_cookie(response, name: str, request: Request) -> None:
+    response.delete_cookie(name, secure=_is_https(request), httponly=True, samesite="lax")
+
+
+async def _current_user(request: Request) -> dict | None:
+    """The signed-in user ({"sub", "email", "name", "t"}) or None. Looked up once
+    per request; an in-use login is renewed at most once an hour."""
+    if not auth.enabled():
+        return None
+    if hasattr(request.state, "user"):
+        return request.state.user
+    sid = request.cookies.get(_auth_cookie_name(request), "")
+    user = None
+    if _TOKEN_RE.fullmatch(sid):
+        user = await _store.get_json(f"login:{sid}")
+        if user and time.time() - user.get("t", 0) > auth.LOGIN_REFRESH:
+            user["t"] = time.time()
+            await _store.set_json(f"login:{sid}", user, auth.LOGIN_TTL)
+    request.state.user = user
+    return user
+
+
+async def _tier(request: Request) -> auth.Tier | None:
+    """The caller's limits, or None when sign-in is not configured (no tiers)."""
+    if not auth.enabled():
+        return None
+    return auth.user_tier(MAX_DOCS_PER_SESSION) if await _current_user(request) else auth.guest_tier()
+
+
+async def _quota_limited(request: Request, tier: auth.Tier | None, kind: str) -> JSONResponse | None:
+    """Daily cap on questions ("ask") or uploads ("upload") for the caller's tier."""
+    if tier is None:
+        return None
+    per_day = tier.ask_per_day if kind == "ask" else tier.uploads_per_day
+    noun = "questions" if kind == "ask" else "uploads"
+    if tier.name == "guest":
+        message = f"Guest limit reached ({per_day} {noun} per day). Sign in with Google to keep going."
+    else:
+        message = f"Daily limit reached ({per_day} {noun}). Please try again tomorrow."
+    if tier.name == "guest":
+        if blocked := await _guest_guard(request, kind, per_day):
+            return blocked
+    return await _rate_limited(request, f"{kind}_daily", [(per_day, auth.DAY)], message)
+
+
+def _too_many(message: str, retry_after: int) -> JSONResponse:
+    response = _error(message, 429)
+    response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
+async def _guest_guard(request: Request, kind: str, per_day: int) -> JSONResponse | None:
+    """Extra daily caps for guests, on top of the per-IP one (which a guest can
+    dodge by switching network): one per browser (its guest cookie, so a shared
+    office IP does not share a quota but clearing the IP does not reset it) and
+    one global ceiling so a swarm of fresh guests cannot drain the LLM budget."""
+    noun = "questions" if kind == "ask" else "uploads"
+    if _turnstile() and not await _store.get_json(f"human:{_client_ip(request)}"):
+        return JSONResponse({"error": "Please complete the quick check first.", "challenge": True}, status_code=403)
+    ceiling = auth._env_int("GUEST_GLOBAL_DAILY_QUESTIONS", 600) if kind == "ask" else auth._env_int("GUEST_GLOBAL_DAILY_UPLOADS", 200)
+    if retry := await _store.rate_hit(f"rl:guests:{kind}_daily", [(ceiling, auth.DAY)]):
+        return _too_many(f"Guest access is very busy today. Sign in with Google to keep using {noun}.", retry)
+    device = request.cookies.get(_cookie_name(request), "")
+    if _TOKEN_RE.fullmatch(device):
+        key = hashlib.sha256(device.encode()).hexdigest()[:32]
+        if retry := await _store.rate_hit(f"rl:dev:{key}:{kind}_daily", [(per_day, auth.DAY)]):
+            return _too_many(f"Guest limit reached ({per_day} {noun} per day). Sign in with Google to keep going.", retry)
+    return None
+
+
+def _doc_limit_message(tier: auth.Tier | None, max_docs: int) -> str:
+    if tier is not None and tier.name == "guest":
+        return (
+            f"Guests can load {max_docs} document{'s' if max_docs != 1 else ''} at a time. "
+            f"Remove it, or sign in with Google to load up to {MAX_DOCS_PER_SESSION}."
+        )
+    return f"You can load up to {max_docs} documents at once. Remove one first."
 
 
 def _same_origin(request: Request) -> bool:
@@ -416,20 +735,27 @@ def _error(message: str, status_code: int) -> JSONResponse:
 async def _json_body(request: Request) -> dict:
     """Parsed JSON object body, or {} for a missing/invalid/non-object/oversized
     body (the size check also covers bodies sent without Content-Length)."""
-    raw = await request.body()
-    if len(raw) > MAX_JSON_BYTES:
-        return {}
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():  # stop reading at the cap, never buffer an unbounded body
+        size += len(chunk)
+        if size > MAX_JSON_BYTES:
+            return {}
+        chunks.append(chunk)
     try:
-        body = json.loads(raw)
+        body = json.loads(b"".join(chunks))
     except ValueError:
         return {}
     return body if isinstance(body, dict) else {}
 
 
-async def _question_request(request: Request) -> tuple[Session, str, list] | JSONResponse:
-    """Validate an ask request: a session with documents, a question, and an
-    optional `doc_ids` list choosing which of the session's documents to search."""
-    session = _get_session(request)
+async def _question_request(
+    request: Request, session: Session | None
+) -> tuple[Session, str, list, dict | None] | JSONResponse:
+    """Validate an ask request: a session with documents, a question, an optional
+    `doc_ids` list choosing which of the session's documents to search and, for a
+    signed-in user, an optional `chat_id` to continue (it must be one of their chats).
+    Returns (session, question, states, chat); `chat` is None for a new conversation."""
     if session is None:
         return _error("No document is loaded. Please upload a PDF first.", 400)
 
@@ -442,19 +768,31 @@ async def _question_request(request: Request) -> tuple[Session, str, list] | JSO
         return _error(f"Question is too long (max {MAX_QUESTION_CHARS} characters).", 400)
 
     doc_ids = body.get("doc_ids")
-    with session.lock:
-        if not session.docs:
-            return _error("No document is loaded. Please upload a PDF first.", 400)
-        if doc_ids is None:
-            states = list(session.docs.values())
-        else:
-            if not isinstance(doc_ids, list):
-                return _error("doc_ids must be a list.", 400)
-            # Only ids from this session count: another session's ids simply don't match.
-            states = [session.docs[d] for d in doc_ids if isinstance(d, str) and d in session.docs]
-            if not states:
-                return _error("Choose at least one of your documents to search.", 400)
-    return session, question, states
+    known = _doc_ids(session)
+    if not known:
+        return _error("No document is loaded. Please upload a PDF first.", 400)
+    if doc_ids is None:
+        wanted = known
+    else:
+        if not isinstance(doc_ids, list):
+            return _error("doc_ids must be a list.", 400)
+        # Only ids from this workspace count: another user's ids simply don't match.
+        wanted = [d for d in doc_ids if isinstance(d, str) and d in known]
+        if not wanted:
+            return _error("Choose at least one of your documents to search.", 400)
+    try:
+        states, lost = await _load_states(session, wanted)
+    except (MemoryFull, StorageUnavailable) as e:
+        return _restore_failure(e)
+    if problem := _lost_documents_error(lost):
+        return problem
+    chat = None
+    chat_id = body.get("chat_id")
+    if session.owner and chat_id is not None:
+        chat = await _repo().get_chat(session.owner, chat_id) if isinstance(chat_id, str) else None
+        if chat is None:
+            return _error("That chat was not found.", 404)
+    return session, question, states, chat
 
 
 def _sse(event: str, data) -> str:
@@ -463,6 +801,11 @@ def _sse(event: str, data) -> str:
 
 def _documents(session: Session) -> list[dict]:
     with session.lock:
+        if session.owner:
+            return [
+                {"id": doc_id, "filename": m.name, "num_pages": m.num_pages, "num_chunks": m.num_chunks}
+                for doc_id, m in session.meta.items()
+            ]
         return [
             {"id": doc_id, "filename": state.name, "num_pages": state.num_pages, "num_chunks": state.num_chunks}
             for doc_id, state in session.docs.items()
@@ -474,7 +817,7 @@ def _unique_name(session: Session, filename: str) -> str:
     extension, so a duplicate inserts its counter before the extension: two
     uploads of 'notes.pdf' become 'notes.pdf' and 'notes (2).pdf' (not
     'notes.pdf (2)', which would no longer end in .pdf)."""
-    taken = {s.name for s in session.docs.values()}
+    taken = {d["filename"] for d in _documents(session)}
     if filename not in taken:
         return filename
     stem, dot, ext = filename.rpartition(".")
@@ -490,7 +833,17 @@ def _clean_filename(raw: str | None) -> str:
     """Basename only, no control characters, at most MAX_FILENAME_CHARS
     (keeping the extension). Filenames are shown in the UI and label passages
     in the prompt, so an attacker-chosen name must stay short and inert."""
-    name = re.sub(r"[\x00-\x1f\x7f]", "", Path(raw or "").name).strip()
+    # Windows-style separators are folded to "/" first (Path on Linux would keep
+    # "..\..\x.pdf" whole); control, bidirectional-override and zero-width
+    # characters are dropped so a name cannot reorder its own extension on screen
+    # ("report\u202efdp.exe") or hide characters.
+    name = re.sub(
+        r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]",
+        "",
+        PurePosixPath((raw or "").replace("\\", "/")).name,
+    ).strip()
+    if name in (".", ".."):
+        name = ""  # a bare traversal component is not a name
     if len(name) > MAX_FILENAME_CHARS:
         stem, dot, ext = name.rpartition(".")
         name = (stem[: MAX_FILENAME_CHARS - len(ext) - 2] + "…" + dot + ext) if dot else name[:MAX_FILENAME_CHARS]
@@ -519,18 +872,20 @@ def _llm_error_response(e: Exception, action: str) -> JSONResponse:
 @app.post("/api/ingest")
 async def ingest(request: Request, file: UploadFile = File(...)):
     _prune_sessions()
-    if limited := _rate_limited(request, "ingest"):
+    if limited := await _rate_limited(request, "ingest"):
         return limited
+    tier = await _tier(request)
+    max_docs = tier.max_docs if tier else MAX_DOCS_PER_SESSION
 
     filename = _clean_filename(file.filename)
     if not document_loader.is_supported(filename):
         return _error("Please upload a PDF, Word (.docx), text or Markdown file.", 400)
 
-    session = _get_session(request)
-    if session is not None:
-        with session.lock:
-            if len(session.docs) >= MAX_DOCS_PER_SESSION:
-                return _error(f"You can load up to {MAX_DOCS_PER_SESSION} documents at once. Remove one first.", 400)
+    session = await _get_session(request)
+    if session is not None and _doc_count(session) >= max_docs:
+        return _error(_doc_limit_message(tier, max_docs), 400)
+    if limited := await _quota_limited(request, tier, "upload"):
+        return limited
 
     # Read at most one byte past the limit, so an oversized upload is never
     # held in memory in full.
@@ -600,11 +955,10 @@ async def ingest(request: Request, file: UploadFile = File(...)):
 
     # Look the session up again: it may have expired or been evicted while
     # this upload was being indexed.
-    session = _get_session(request)
-    is_new_session = session is None
-    if is_new_session:
-        session_id = secrets.token_urlsafe(32)
-        session = Session()
+    existing_session = await _get_session(request)
+    is_new_session = existing_session is None
+    session_id = secrets.token_urlsafe(32) if is_new_session else ""
+    session = existing_session if existing_session is not None else Session()
 
     # Re-check the aggregate budget now that this document's real size is
     # known (other uploads may have landed while it was being indexed). A new
@@ -618,10 +972,58 @@ async def ingest(request: Request, file: UploadFile = File(...)):
         )
 
     doc_id = secrets.token_urlsafe(8)
+    # Check the document cap, store and register under one lock: otherwise N
+    # uploads in flight at once all pass the check and the cap is exceeded.
+    # (Across several instances the cap can still be overshot by the uploads in
+    # flight at the same moment; the storage allowance bounds that.)
+    async with session.load_lock:
+        return await _store_uploaded_document(
+            request, session, is_new_session, session_id, index_state, doc_id, tier, max_docs
+        )
+
+
+async def _store_uploaded_document(
+    request: Request,
+    session: Session,
+    is_new_session: bool,
+    session_id: str,
+    index_state: pipeline.IndexState,
+    doc_id: str,
+    tier: auth.Tier | None,
+    max_docs: int,
+) -> JSONResponse:
+    if _doc_count(session) >= max_docs:
+        return _error(_doc_limit_message(tier, max_docs), 400)
+    saved = None
+    if session.owner:
+        # A signed-in user's document is stored durably before it counts as
+        # uploaded; packing (compression) is CPU work, so it runs in a thread.
+        try:
+            packed = await run_in_threadpool(
+                docstore.pack,
+                doc_id,
+                index_state.name or "document",
+                index_state.num_pages,
+                index_state.chunk_size,
+                index_state.chunk_overlap,
+                index_state.store.chunks,
+                index_state.store.embeddings,
+                None,
+                index_state.store.index,
+            )
+            saved = await _repo().save(_owner_of(session), packed, existing=session.meta)
+        except docstore.StorageQuotaError:
+            return _error(
+                f"Your saved-documents storage is full ({docstore.max_user_bytes() // (1024 * 1024)} MB). "
+                "Remove a document first.",
+                413,
+            )
+        except Exception as e:
+            return _server_error(e, "saving the document", "Something went wrong while saving this document.", 500)
     with session.lock:
-        if len(session.docs) >= MAX_DOCS_PER_SESSION:
-            return _error(f"You can load up to {MAX_DOCS_PER_SESSION} documents at once. Remove one first.", 400)
         session.docs[doc_id] = index_state
+        if saved is not None:
+            session.meta[doc_id] = saved
     if is_new_session:
         _sessions[session_id] = session
         _prune_sessions()
@@ -633,34 +1035,26 @@ async def ingest(request: Request, file: UploadFile = File(...)):
             "num_pages": index_state.num_pages,
             "num_chunks": index_state.num_chunks,
             "documents": _documents(session),
+            "warnings": index_state.warnings[:5],
         }
     )
     if is_new_session:
-        response.set_cookie(
-            _cookie_name(request),
-            session_id,
-            httponly=True,
-            samesite="lax",
-            secure=_is_https(request),
-            max_age=SESSION_TTL_SECONDS,
-        )
+        _set_cookie(response, _cookie_name(request), session_id, request, SESSION_TTL_SECONDS)
     return response
 
 
 @app.get("/api/session")
 async def get_session(request: Request):
     """Current documents and conversation, so a page reload can restore the UI."""
-    session = _get_session(request)
+    session = await _get_session(request)
     if session is None:
         return {"documents": [], "history": []}
-    with session.lock:
-        history = list(session.history)
-    return {"documents": _documents(session), "history": history}
+    return {"documents": _documents(session), "history": await _history(session)}  # (a signed-in user's chats: /api/chats)
 
 
 def _turn(question: str, answer: str, by: dict | None) -> dict:
     """One conversation turn as stored in the session (and restored on reload)."""
-    turn = {"question": question, "answer": answer}
+    turn: dict[str, Any] = {"question": question, "answer": answer}
     if by:
         turn["answered_by"] = by
     return turn
@@ -683,18 +1077,23 @@ async def health():
 async def ask(request: Request):
     """Answer as one JSON response (the UI uses /api/ask/stream)."""
     _prune_sessions()
-    if limited := _rate_limited(request, "llm"):
+    await _current_user(request)  # one lookup, cached for the calls below
+    limited, session = await asyncio.gather(_rate_limited(request, "llm"), _get_session(request))
+    if limited:
         return limited
-    checked = await _question_request(request)
+    checked = await _question_request(request, session)
     if isinstance(checked, JSONResponse):
         return checked
-    session, question, states = checked
+    session, question, states, chat = checked
+    quota, history = await asyncio.gather(
+        _quota_limited(request, await _tier(request), "ask"), _history(session, chat["id"] if chat else None)
+    )
+    if quota:
+        return quota
 
     if not await _take_slot(_llm_slots):
         return _busy()
     try:
-        with session.lock:
-            history = list(session.history)
         result = await run_in_threadpool(pipeline.answer, question, states, history=history)
     except Exception as e:
         return _llm_error_response(e, "answering that question")
@@ -702,10 +1101,13 @@ async def ask(request: Request):
         _llm_slots.release()
 
     by = answered_by(result["answer"])
-    with session.lock:
-        session.history.append(_turn(question, result["answer"], by))
-        del session.history[:-MAX_STORED_TURNS]
-    return {"answer": result["answer"], "sources": result["sources"], "answered_by": by}
+    saved_chat = await _record_turn(session, _turn(question, result["answer"], by), history, chat)
+    return {
+        "answer": result["answer"],
+        "sources": result["sources"],
+        "answered_by": by,
+        **({"chat": saved_chat} if saved_chat else {}),
+    }
 
 
 @app.post("/api/ask/stream")
@@ -722,19 +1124,24 @@ async def ask_stream(request: Request):
     not saved to the conversation history.
     """
     _prune_sessions()
-    if limited := _rate_limited(request, "llm"):
+    await _current_user(request)  # one lookup, cached for the calls below
+    limited, session = await asyncio.gather(_rate_limited(request, "llm"), _get_session(request))
+    if limited:
         return limited
-    checked = await _question_request(request)
+    checked = await _question_request(request, session)
     if isinstance(checked, JSONResponse):
         return checked
-    session, question, states = checked
+    session, question, states, chat = checked
+    quota, history = await asyncio.gather(
+        _quota_limited(request, await _tier(request), "ask"), _history(session, chat["id"] if chat else None)
+    )
+    if quota:
+        return quota
 
     if not await _take_slot(_llm_slots):
         return _busy()
     pieces = None
     try:
-        with session.lock:
-            history = list(session.history)
         sources, pieces = await run_in_threadpool(
             pipeline.answer_stream, question, states, history=history
         )
@@ -775,10 +1182,10 @@ async def ask_stream(request: Request):
                 yield _sse("token", {"text": text})
             completed = True
             answer = "".join(parts)
-            with session.lock:
-                session.history.append(_turn(question, answer, route or None))
-                del session.history[:-MAX_STORED_TURNS]
-            yield _sse("done", {})
+            yield _sse("done", {})  # the answer is complete: tell the browser first,
+            saved_chat = await _record_turn(session, _turn(question, answer, route or None), history, chat)  # then save it
+            if saved_chat and chat is None:
+                yield _sse("chat", saved_chat)  # a new chat was created: the sidebar can list it
         except Exception as e:
             reference = secrets.token_hex(4)
             log.error("[%s] Error while streaming an answer: %r", reference, e)
@@ -799,21 +1206,33 @@ async def ask_stream(request: Request):
     )
 
 
+async def _one_document(session: Session, doc_id) -> pipeline.IndexState | JSONResponse:
+    """The loaded index for one document id, or the error response to send."""
+    if not isinstance(doc_id, str) or doc_id not in _doc_ids(session):
+        return _error("That document is not loaded.", 404)
+    try:
+        states, lost = await _load_states(session, [doc_id])
+    except (MemoryFull, StorageUnavailable) as e:
+        return _restore_failure(e)
+    if problem := _lost_documents_error(lost):
+        return problem
+    if not states:  # removed (elsewhere) between the membership check and the load
+        return _error("That document is not loaded.", 404)
+    return states[0]
+
+
 @app.post("/api/summary")
 async def summary(request: Request):
-    if limited := _rate_limited(request, "llm"):
+    if limited := await _rate_limited(request, "llm"):
         return limited
-    session = _get_session(request)
-    if session is None:
+    session = await _get_session(request)
+    if session is None or not _doc_count(session):
         return _error("No document is loaded. Please upload a PDF first.", 400)
 
-    body = await _json_body(request)
-    with session.lock:
-        if not session.docs:
-            return _error("No document is loaded. Please upload a PDF first.", 400)
-        index_state = session.docs.get(body.get("id"))
-    if index_state is None:
-        return _error("That document is not loaded.", 404)
+    doc_id = (await _json_body(request)).get("id")
+    index_state = await _one_document(session, doc_id)
+    if isinstance(index_state, JSONResponse):
+        return index_state
 
     if not await _take_slot(_llm_slots):
         return _busy()
@@ -827,6 +1246,7 @@ async def summary(request: Request):
         "filename": index_state.name,
         "summary": result["summary"],
         "sources": result["sources"],
+        "coverage": result.get("coverage"),
         "answered_by": answered_by(result["summary"]),
     }
 
@@ -834,19 +1254,16 @@ async def summary(request: Request):
 @app.post("/api/suggestions")
 async def suggestions(request: Request):
     """Starter questions for a document, written by the LLM from a sample of it."""
-    if limited := _rate_limited(request, "llm"):
+    if limited := await _rate_limited(request, "llm"):
         return limited
-    session = _get_session(request)
-    if session is None:
+    session = await _get_session(request)
+    if session is None or not _doc_count(session):
         return _error("No document is loaded. Please upload a PDF first.", 400)
 
-    body = await _json_body(request)
-    with session.lock:
-        if not session.docs:
-            return _error("No document is loaded. Please upload a PDF first.", 400)
-        index_state = session.docs.get(body.get("id"))
-    if index_state is None:
-        return _error("That document is not loaded.", 404)
+    doc_id = (await _json_body(request)).get("id")
+    index_state = await _one_document(session, doc_id)
+    if isinstance(index_state, JSONResponse):
+        return index_state
 
     if not await _take_slot(_llm_slots):
         return _busy()
@@ -861,21 +1278,233 @@ async def suggestions(request: Request):
 
 @app.post("/api/remove")
 async def remove(request: Request):
-    """Remove one document (body {"id": ...}) or, with no id, everything."""
-    session_id = request.cookies.get(_cookie_name(request), "")
-    session = _sessions.get(session_id)
+    """Remove one document (body {"id": ...}) or, with no id, everything.
+    For a signed-in user this deletes the stored copy too: metadata and all
+    artifacts. Saved chats are kept."""
     doc_id = (await _json_body(request)).get("id")
 
-    if session is not None and doc_id is not None:
-        with session.lock:
-            session.docs.pop(doc_id, None)
-            has_documents = bool(session.docs)
+    user = await _current_user(request)
+    if user:
+        session = await _user_session(user["sub"])
+        if doc_id is None:
+            await _repo().delete_all(_owner_of(session))
+            with session.lock:
+                session.meta.clear()
+                session.docs.clear()
+        elif isinstance(doc_id, str) and doc_id in _doc_ids(session):
+            await _repo().delete(_owner_of(session), doc_id)
+            with session.lock:
+                session.meta.pop(doc_id, None)
+                session.docs.pop(doc_id, None)
+        return {"ok": True, "documents": _documents(session)}
+
+    session_id = request.cookies.get(_cookie_name(request), "")
+    guest = _sessions.get(session_id)
+
+    if guest is not None and doc_id is not None:
+        with guest.lock:
+            guest.docs.pop(doc_id, None)
+            has_documents = bool(guest.docs)
         if has_documents:
-            return {"ok": True, "documents": _documents(session)}
+            return {"ok": True, "documents": _documents(guest)}
 
     _sessions.pop(session_id, None)
     response = JSONResponse({"ok": True, "documents": []})
-    response.delete_cookie(_cookie_name(request), secure=_is_https(request), httponly=True, samesite="lax")
+    _drop_cookie(response, _cookie_name(request), request)
+    return response
+
+
+async def _adopt_guest_documents(request: Request, uid: str) -> bool:
+    """On sign-in, move the browser's guest documents (and conversation) into
+    the user's saved workspace so nothing uploaded before signing in is lost.
+    Returns True if there was a guest session to retire."""
+    guest = _sessions.get(request.cookies.get(_cookie_name(request), ""))
+    if guest is None:
+        return False
+    session = await _user_session(uid)
+    with guest.lock:
+        items = list(guest.docs.items())
+        turns = list(guest.history)
+    for doc_id, state in items:
+        if _doc_count(session) >= MAX_DOCS_PER_SESSION:
+            break
+        try:
+            packed = await run_in_threadpool(
+                docstore.pack,
+                doc_id,
+                state.name or "document",
+                state.num_pages,
+                state.chunk_size,
+                state.chunk_overlap,
+                state.store.chunks,
+                state.store.embeddings,
+                None,
+                state.store.index,
+            )
+            saved = await _repo().save(_owner_of(session), packed, existing=session.meta)
+        except Exception as e:  # over quota, storage trouble: keep going with the rest
+            log.warning("Could not keep a guest document on sign-in (%s)", type(e).__name__)
+            continue
+        with session.lock:
+            session.docs[doc_id] = state
+            session.meta[doc_id] = saved
+    if turns and _doc_count(session):
+        try:
+            await _repo().import_turns(_owner_of(session), turns, "Chat from before you signed in")
+        except docstore.ChatLimitError:
+            pass
+    _sessions.pop(request.cookies.get(_cookie_name(request), ""), None)
+    return True
+
+
+async def _signed_in_workspace(request: Request) -> Session | JSONResponse:
+    """The signed-in user's workspace, or the 401 for everyone else (chats are saved per account)."""
+    user = await _current_user(request)
+    if not user:
+        return _error("Sign in to use saved chats.", 401)
+    return await _user_session(user["sub"])
+
+
+@app.get("/api/chats")
+async def list_chats(request: Request):
+    """The signed-in user's saved chats, most recent first."""
+    session = await _signed_in_workspace(request)
+    if isinstance(session, JSONResponse):
+        return session
+    owner = _owner_of(session)
+    await _repo().migrate_legacy_history(owner)
+    return {"chats": await _repo().list_chats(owner)}
+
+
+@app.post("/api/chats")
+async def new_chat(request: Request):
+    """Create an empty chat (the browser usually lets the first question create it)."""
+    session = await _signed_in_workspace(request)
+    if isinstance(session, JSONResponse):
+        return session
+    title = (await _json_body(request)).get("title")
+    try:
+        chat = await _repo().create_chat(_owner_of(session), title if isinstance(title, str) else "New chat")
+    except docstore.ChatLimitError:
+        return _error(f"You can keep up to {docstore.max_chats()} chats. Delete one first.", 400)
+    return {"chat": chat}
+
+
+@app.get("/api/chat")
+async def open_chat(request: Request, id: str = ""):
+    """One saved chat with its turns."""
+    session = await _signed_in_workspace(request)
+    if isinstance(session, JSONResponse):
+        return session
+    chat = await _repo().get_chat(_owner_of(session), id)
+    if chat is None:
+        return _error("That chat was not found.", 404)
+    return {"chat": chat, "history": await _repo().get_chat_history(_owner_of(session), chat["id"])}
+
+
+@app.post("/api/chats/rename")
+async def rename_chat(request: Request):
+    session = await _signed_in_workspace(request)
+    if isinstance(session, JSONResponse):
+        return session
+    body = await _json_body(request)
+    chat_id, title = body.get("id"), body.get("title")
+    if not isinstance(chat_id, str) or not isinstance(title, str) or not title.strip():
+        return _error("Give the chat a name.", 400)
+    chat = await _repo().rename_chat(_owner_of(session), chat_id, title)
+    return {"chat": chat} if chat else _error("That chat was not found.", 404)
+
+
+@app.post("/api/chats/delete")
+async def delete_chat(request: Request):
+    session = await _signed_in_workspace(request)
+    if isinstance(session, JSONResponse):
+        return session
+    chat_id = (await _json_body(request)).get("id")
+    if not isinstance(chat_id, str) or not await _repo().delete_chat(_owner_of(session), chat_id):
+        return _error("That chat was not found.", 404)
+    return {"ok": True}
+
+
+@app.post("/api/login")
+async def login(request: Request):
+    """Exchange a Firebase ID token (from the browser's Google sign-in) for our
+    own login session. The token is verified, used once, and not kept."""
+    if not auth.enabled():
+        return _error("Sign-in is not configured on this server.", 503)
+    if limited := await _rate_limited(request, "login"):
+        return limited
+    token = (await _json_body(request)).get("id_token")
+    try:
+        profile = await run_in_threadpool(auth.verify_id_token, token if isinstance(token, str) else "")
+    except auth.AuthError as e:
+        log.warning("Sign-in rejected: %s", e)
+        return _error("Couldn't sign you in. Please try again.", 401)
+    sid = secrets.token_urlsafe(32)
+    await _store.set_json(f"login:{sid}", {**profile, "t": time.time()}, auth.LOGIN_TTL)
+    log.info("User signed in")
+    adopted = await _adopt_guest_documents(request, profile["sub"])
+    response = JSONResponse({"ok": True, "user": {"name": profile["name"], "email": profile["email"]}})
+    _set_cookie(response, _auth_cookie_name(request), sid, request, auth.LOGIN_TTL)
+    if adopted:
+        _drop_cookie(response, _cookie_name(request), request)
+    return response
+
+
+@app.get("/api/me")
+async def me(request: Request):
+    """Who is signed in and what limits apply, for the header and guest notice."""
+    user = await _current_user(request)
+    tier = await _tier(request)
+    return {
+        "auth_enabled": auth.enabled(),
+        "firebase": auth.web_config() if auth.enabled() else None,
+        "turnstile_site_key": keys[0] if (keys := _turnstile()) and not user else None,
+        "human": bool(await _store.get_json(f"human:{_client_ip(request)}")) if _turnstile() else True,
+        "user": {"name": user["name"], "email": user["email"]} if user else None,
+        "limits": (
+            {"tier": tier.name, "max_docs": tier.max_docs, "questions_per_day": tier.ask_per_day}
+            if tier
+            else None
+        ),
+    }
+
+
+@app.post("/api/turnstile")
+async def turnstile(request: Request):
+    """Verify a Cloudflare Turnstile token (from the browser widget) and remember,
+    for this network, that a human passed - guests need it before uploading or asking."""
+    keys = _turnstile()
+    if keys is None:
+        return _error("The check is not configured on this server.", 404)
+    if limited := await _rate_limited(request, "login"):
+        return limited
+    token = (await _json_body(request)).get("token")
+    ip = _client_ip(request)
+    if not isinstance(token, str) or not 0 < len(token) <= 2048:
+        return _error("The check did not complete. Please try again.", 400)
+    if not await run_in_threadpool(_verify_turnstile, keys[1], token, ip):
+        return _error("The check did not pass. Please try again.", 400)
+    await _store.set_json(f"human:{ip}", {"t": time.time()}, HUMAN_TTL)
+    return {"ok": True}
+
+
+@app.post("/api/logout")
+async def logout(request: Request):
+    """Sign out: end the login and drop everything this process holds for the
+    browser (the user's cached indexes and any guest session). The user's saved
+    documents stay in storage, reachable only by signing in again."""
+    user = await _current_user(request)
+    if user:
+        _user_sessions.pop(docstore.owner_key(user["sub"]), None)
+    sid = request.cookies.get(_auth_cookie_name(request), "")
+    if _TOKEN_RE.fullmatch(sid):
+        await _store.delete(f"login:{sid}")
+    request.state.user = None
+    _sessions.pop(request.cookies.get(_cookie_name(request), ""), None)
+    response = JSONResponse({"ok": True})
+    _drop_cookie(response, _auth_cookie_name(request), request)
+    _drop_cookie(response, _cookie_name(request), request)
     return response
 
 

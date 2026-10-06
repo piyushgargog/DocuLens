@@ -13,9 +13,9 @@
   <meta property="og:url" content="https://doculens.duckdns.org/" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><rect width=%2232%22 height=%2232%22 rx=%228%22 fill=%22%23C6613F%22/><path d=%22M10 8h8l5 5v11H10z%22 fill=%22white%22/><rect x=%2213%22 y=%2216%22 width=%227%22 height=%222.4%22 rx=%221%22 fill=%22%23FFD43B%22/></svg>" />
   <!-- ?v= changes with each release so browsers holding an older cached copy fetch the new file. -->
-  <link rel="stylesheet" href="/static/style.css?v=3.7.0" />
+  <link rel="stylesheet" href="/static/style.css?v=4.0.0-beta.1" />
   <!-- Applies a saved light/dark choice before first paint (no flash). -->
-  <script src="/static/theme.js?v=3.7.0"></script>
+  <script src="/static/theme.js?v=4.0.0-beta.1"></script>
 </head>
 <body data-view="upload">
   <header class="topbar">
@@ -26,10 +26,19 @@
       <span class="brand-name">DocuLens</span>
     </a>
     <nav class="topbar-links" aria-label="Project links">
-      <a class="topbar-status" id="topbar-status" href="https://github.com/piyushgargog/DocuLens/releases/tag/v3.7.0" target="_blank" rel="noopener" title="AI providers · release notes" hidden>
+      <a class="topbar-status" id="topbar-status" href="https://github.com/piyushgargog/DocuLens/releases/tag/v4.0.0-beta.1" target="_blank" rel="noopener" title="AI providers · release notes" hidden>
         <span class="topbar-status-dot" id="topbar-status-dot" aria-hidden="true"></span>
-        <span class="topbar-status-label">v3.7.0</span>
+        <span class="topbar-status-label">v4.0.0-beta.1</span>
       </a>
+      <button type="button" class="pill-link signin-link" id="signin-link" hidden>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3" /></svg>
+        <span>Log in</span>
+      </button>
+      <div class="user-chip" id="user-chip" hidden>
+        <span class="user-avatar" id="user-avatar" aria-hidden="true"></span>
+        <span class="user-name" id="user-name"></span>
+        <button type="button" class="user-signout" id="signout-btn" title="Sign out">Sign out</button>
+      </div>
       <button type="button" class="theme-btn" id="theme-btn" data-choice="system" aria-label="Theme: match system" title="Theme: match system">
         <svg class="icon icon-system" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>
         <svg class="icon icon-light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
@@ -43,31 +52,47 @@
   </header>
 
   <div class="layout">
-    <!-- Documents in this session (shown once at least one is loaded) -->
-    <aside class="shelf" aria-label="Your documents">
-      <div class="shelf-head">
-        <h2 class="shelf-title">Documents</h2>
-        <span id="add-status" class="add-status" hidden><span class="spinner" aria-hidden="true"></span> Reading&hellip;</span>
-      </div>
-      <label for="add-file-input" class="btn btn-primary btn-block" id="add-btn" tabindex="0">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-        Add PDF
-      </label>
-      <input id="add-file-input" type="file" accept="application/pdf,.txt,.md,.markdown,.docx" hidden />
-      <ul id="doc-list" class="doc-list"></ul>
-      <div class="shelf-actions">
-        <div class="shelf-links">
-          <button id="export-btn" class="btn btn-ghost" type="button" disabled>
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14" /></svg>
-            Export conversation
-          </button>
-          <button id="remove-btn" class="btn btn-ghost btn-danger" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>
-            Remove all
+    <div class="side">
+      <!-- Saved chats (signed-in users only) -->
+      <aside class="chats" id="chats-panel" aria-label="Your chats" hidden>
+        <div class="chats-head">
+          <h2 class="shelf-title">Chats</h2>
+          <button type="button" class="btn btn-primary btn-xs" id="new-chat-btn">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            New chat
           </button>
         </div>
-      </div>
-    </aside>
+        <ul class="chat-list" id="chat-list" aria-label="Chat history"></ul>
+        <p class="chat-empty" id="chat-empty" hidden>No chats yet. Ask a question and it will be saved here.</p>
+      </aside>
+
+      <!-- Documents in this session (shown once at least one is loaded) -->
+      <aside class="shelf" aria-label="Your documents">
+        <div class="shelf-head">
+          <h2 class="shelf-title">Documents</h2>
+          <span id="add-status" class="add-status" hidden><span class="spinner" aria-hidden="true"></span> Reading&hellip;</span>
+        </div>
+        <label for="add-file-input" class="btn btn-primary btn-block" id="add-btn" tabindex="0">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          Add PDF
+        </label>
+        <input id="add-file-input" type="file" accept="application/pdf,.txt,.md,.markdown,.docx" hidden />
+        <p class="shelf-note" id="shelf-note" hidden></p>
+        <ul id="doc-list" class="doc-list"></ul>
+        <div class="shelf-actions">
+          <div class="shelf-links">
+            <button id="export-btn" class="btn btn-ghost" type="button" disabled>
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14" /></svg>
+              Export conversation
+            </button>
+            <button id="remove-btn" class="btn btn-ghost btn-danger" type="button">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>
+              Remove all
+            </button>
+          </div>
+        </div>
+      </aside>
+    </div>
 
     <main class="desk">
       <!-- Empty / upload state -->
@@ -98,6 +123,10 @@
           <span class="dropzone-hint">Up to 25MB · PDF, Word, text or Markdown</span>
         </label>
         <input id="file-input" type="file" accept="application/pdf,.txt,.md,.markdown,.docx" hidden />
+        <p id="guest-note" class="guest-note" hidden>
+          <strong>Guest mode:</strong> <span id="guest-limits"></span>
+          <button type="button" class="link-button" id="guest-signin">Log in</button> for more.
+        </p>
         <p id="upload-error" class="error-text" role="alert" hidden></p>
         <ul class="features" aria-label="What you get">
           <li>
@@ -110,10 +139,10 @@
           </li>
           <li>
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10V8a6 6 0 0 1 12 0v2M5 10h14v10H5z" /></svg>
-            <span><strong>Private</strong> Never saved to disk, deleted after use</span>
+            <span><strong>Private</strong> Your original file is never stored, and guest sessions are wiped after use</span>
           </li>
         </ul>
-        <p class="privacy-note">Your PDF is never saved to disk. Its text is kept in memory only while you use it, and is deleted when you remove it or after 2 hours of inactivity. To write each answer, your question and the most relevant passages are sent to an AI provider (Groq, OpenRouter, NVIDIA or Hugging Face).</p>
+        <p class="privacy-note">Your original file is never stored. As a guest, its text is kept in memory only and is deleted when you remove it or after 2 hours of inactivity. If you sign in, the extracted text and search vectors of your documents are saved in a managed Redis database for up to 30 days so they survive restarts, and you can delete them anytime. To write each answer, your question and the most relevant passages are sent to an AI provider (Groq, OpenRouter, NVIDIA or Hugging Face).</p>
       </section>
 
       <!-- Indexing state -->
@@ -176,17 +205,44 @@
       <a href="https://github.com/piyushgargog/DocuLens/releases" target="_blank" rel="noopener">Releases</a>
       <a href="https://github.com/piyushgargog/DocuLens/issues" target="_blank" rel="noopener">Issues</a>
       <button type="button" class="footer-link-button" id="privacy-btn">Privacy</button>
-      <a class="version-badge" href="https://github.com/piyushgargog/DocuLens/releases/tag/v3.7.0" target="_blank" rel="noopener" title="Release notes">v3.7.0</a>
+      <a class="version-badge" href="https://github.com/piyushgargog/DocuLens/releases/tag/v4.0.0-beta.1" target="_blank" rel="noopener" title="Release notes">v4.0.0-beta.1</a>
     </nav>
   </footer>
 
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
+  <dialog id="human-dialog" class="dialog signin-dialog" aria-labelledby="human-title">
+    <h2 id="human-title">One quick check</h2>
+    <p class="signin-lead">Confirm you are not a bot, then you can carry on. You will be asked again in about an hour.</p>
+    <div id="human-box" class="human-box"></div>
+    <p id="human-error" class="error-text" role="alert" hidden></p>
+  </dialog>
+
+  <dialog id="signin-dialog" class="dialog signin-dialog" aria-labelledby="signin-title">
+    <span class="signin-logo" aria-hidden="true">
+      <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8" class="logo-bg" /><path d="M10 8h8l5 5v11H10z" class="logo-page" /><rect x="13" y="16" width="7" height="2.4" rx="1" class="logo-mark" /></svg>
+    </span>
+    <h2 id="signin-title">Log in to DocuLens</h2>
+    <p class="signin-lead">Keep your documents and every conversation, and get higher daily limits.</p>
+    <ul class="signin-perks">
+      <li>Chats saved in your sidebar, like you left them</li>
+      <li>Documents kept for 30 days, on any device</li>
+      <li>200 questions a day instead of 5</li>
+    </ul>
+    <button type="button" class="btn-google" id="google-btn">
+      <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      <span>Continue with Google</span>
+    </button>
+    <p id="signin-error" class="error-text" role="alert" hidden></p>
+    <p class="signin-fine">We use your Google name and e-mail only to sign you in. Your documents stay private to your account.</p>
+    <form method="dialog" class="signin-close"><button class="btn btn-ghost" type="submit">Not now</button></form>
+  </dialog>
+
   <dialog id="privacy-dialog" class="dialog" aria-labelledby="privacy-title">
     <h2 id="privacy-title">Privacy</h2>
     <ul>
-      <li>Your PDF is never written to disk. Its extracted text lives only in server memory for your session.</li>
-      <li>It's deleted when you remove the document, after 2 hours of inactivity, or when the server restarts.</li>
+      <li>Your original file is never stored. As a guest, its extracted text lives only in server memory and is deleted when you remove it, after 2 hours of inactivity, or when the server restarts.</li>
+      <li>If you sign in, the extracted text and search vectors of your documents are saved in a managed Redis database (Upstash) for up to 30 days so they survive restarts. Only you can open them, and you can delete them at any time.</li>
       <li>To write each answer, your question and the most relevant passages are sent to one AI provider (Groq, OpenRouter, NVIDIA or Hugging Face — whichever is available; each answer shows which one). Nothing else about you is sent.</li>
       <li>The page loads nothing from other websites — no analytics, no trackers, no third-party fonts.</li>
     </ul>
@@ -221,10 +277,11 @@
         <span class="slip-page"></span>
         <span class="slip-score"></span>
       </div>
+      <p class="slip-section" hidden></p>
       <p class="slip-text"></p>
     </li>
   </template>
 
-  <script src="/static/app.js?v=3.7.0"></script>
+  <script src="/static/app.js?v=4.0.0-beta.1"></script>
 </body>
 </html>

@@ -1,0 +1,80 @@
+name: Container security
+
+# Lints the Dockerfiles, builds the image, scans it, writes an SBOM and checks
+# that the hardened container (non-root, read-only root, no capabilities) boots
+# and answers its health check.
+on:
+  push:
+    branches: [main]
+    paths: ["Dockerfile", "deploy/**", "requirements*.txt", ".github/workflows/container-security.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["Dockerfile", "deploy/**", "requirements*.txt", ".github/workflows/container-security.yml"]
+  schedule:
+    - cron: "41 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write  # upload the SARIF report
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: deploy/Dockerfile.update
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build
+        run: docker build -t doculens:ci .
+      - name: Trivy image report (package paths, for triage)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: doculens:ci
+          format: json
+          output: trivy-image.json
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+          ignore-unfixed: true
+      - name: Show where each finding lives
+        run: |
+          python3 - <<'PY'
+          import json
+          for r in json.load(open("trivy-image.json")).get("Results", []):
+              for v in r.get("Vulnerabilities") or []:
+                  print(v["Severity"], v["VulnerabilityID"], v["PkgName"], v["InstalledVersion"], "->", v.get("FixedVersion"), "|", v.get("PkgPath") or r["Target"])
+          PY
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: doculens:ci
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: SBOM (SPDX)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: doculens:ci
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: sbom.spdx.json
+      - name: Boot the hardened container and check it
+        run: |
+          docker run -d --name app --read-only --tmpfs /tmp --tmpfs /app/.cache --cap-drop ALL \
+            --security-opt no-new-privileges --memory 2g --pids-limit 256 -p 127.0.0.1:8000:8000 doculens:ci
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 2; done
+          curl -sf http://127.0.0.1:8000/api/health
+          test "$(docker exec app id -u)" = "10001"

@@ -1,0 +1,43 @@
+name: Dynamic security (ZAP baseline)
+
+# A passive OWASP ZAP baseline scan of a disposable local instance: it spiders
+# and observes responses (headers, cookies, information leaks); it never attacks.
+on:
+  schedule:
+    - cron: "53 4 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write  # the action opens an issue with the report
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+      - name: Install and start the app
+        env:
+          FIREBASE_PROJECT_ID: ci-project
+          FIREBASE_API_KEY: ci-key
+        run: |
+          pip install "torch>=2.13.0" --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          nohup uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 2; done
+      - uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.15.0
+        with:
+          target: http://127.0.0.1:8000
+          fail_action: true
+          allow_issue_writing: false
+          cmd_options: "-a"

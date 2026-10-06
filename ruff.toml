@@ -1,0 +1,21 @@
+# Lint + security rules used by CI (.github/workflows/security.yml).
+line-length = 140
+target-version = "py310"
+extend-exclude = ["venv", ".venv", "tools", "static"]
+
+[lint]
+select = ["E9", "F", "B", "S"]
+ignore = [
+    "S101",  # assert is fine in tests and invariants
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+"retrieval_eval.py" = ["S", "B"]
+"conversation_eval.py" = ["S", "B"]
+"bench_*.py" = ["S", "B"]
+"evaluate.py" = ["S", "B"]
+"score_floor_eval.py" = ["S", "B"]
+
+[lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.File", "fastapi.Form", "fastapi.Depends"]

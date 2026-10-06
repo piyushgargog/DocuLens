@@ -1,0 +1,288 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.75.0"
+  },
+  "ReportID": "01a10c87-fe66-71ec-96ee-482316ae1b25",
+  "CreatedAt": "2026-10-05T20:16:41.510126+05:30",
+  "ArtifactID": "sha256:3577a44baa5af50227837ec54ebf6df76709b26384126025c171d6b3bd7c707a",
+  "ArtifactName": ".",
+  "ArtifactType": "repository",
+  "Metadata": {
+    "RepoURL": "https://github.com/piyushgargog/DocuLens.git",
+    "Branch": "feat/v4",
+    "Commit": "b988c97c07d91ffe2c4331d521d2f7143f93541f",
+    "CommitMsg": "Document the v4 architecture, configuration and measurements\n\nREADME, ARCHITECTURE, DECISIONS (including the experiments that lost), the plan, security notes and .env.example. bench_latency.py measures each pipeline stage.",
+    "Author": "Piyush Garg \u003cpiyushgargxd@gmail.com\u003e",
+    "Committer": "Piyush Garg \u003cpiyushgargxd@gmail.com\u003e"
+  },
+  "Results": [
+    {
+      "Target": "tools/firebase/package-lock.json",
+      "Class": "lang-pkgs",
+      "Type": "npm",
+      "Packages": [
+        {
+          "ID": "@firebase/app@0.14.13",
+          "Name": "@firebase/app",
+          "Identifier": {
+            "PURL": "pkg:npm/%40firebase/app@0.14.13",
+            "UID": "d0af328b307dd423"
+          },
+          "Version": "0.14.13",
+          "Licenses": [
+            "Apache-2.0"
+          ],
+          "Relationship": "direct",
+          "DependsOn": [
+            "@firebase/component@0.7.3",
+            "@firebase/logger@0.5.1",
+            "@firebase/util@1.15.1",
+            "idb@7.1.1",
+            "tslib@2.8.1"
+          ],
+          "Locations": [
+            {
+              "StartLine": 458,
+              "EndLine": 473
+            }
+          ],
+          "AnalyzedBy": "npm"
+        },
+        {
+          "ID": "@firebase/auth@1.13.6",
+          "Name": "@firebase/auth",
+          "Identifier": {
+            "PURL": "pkg:npm/%40firebase/auth@1.13.6",
+            "UID": "235a5e169afb5613"
+          },
+          "Version": "1.13.6",
+          "Licenses": [
+            "Apache-2.0"
+          ],
+          "Relationship": "direct",
+          "DependsOn": [
+            "@firebase/app@0.14.13",
+            "@firebase/component@0.7.5",
+            "@firebase/logger@0.5.2",
+            "@firebase/util@1.15.3",
+            "tslib@2.8.1"
+          ],
+          "Locations": [
+            {
+              "StartLine": 474,
+              "EndLine": 497
+            }
+          ],
+          "AnalyzedBy": "npm"
+        },
+        {
+          "ID": "@firebase/component@0.7.3",
+          "Name": "@firebase/component",
+          "Identifier": {
+            "PURL": "pkg:npm/%40firebase/component@0.7.3",
+            "UID": "90eac56af7053d55"
+          },
+          "Version": "0.7.3",
+          "Licenses": [
+            "Apache-2.0"
+          ],
+          "Indirect": true,
+          "Relationship": "indirect",
+          "DependsOn": [
+            "@firebase/util@1.15.1",
+            "tslib@2.8.1"
+          ],
+          "Locations": [
+            {
+              "StartLine": 536,
+              "EndLine": 548
+            }
+          ],
+          "AnalyzedBy": "npm"
+        },
+        {
+          "ID": "@firebase/component@0.7.5",
+          "Name": "@firebase/component",
+          "Identifier": {
+            "PURL": "pkg:npm/%40firebase/component@0.7.5",
+            "UID": "46b43856d573e1e9"
+          },
+          "Version": "0.7.5",
+          "Licenses": [
+            "Apache-2.0"
+          ],
+          "Indirect": true,
+          "Relationship": "indirect",
+          "DependsOn": [
+            "@firebase/util@1.15.3",
+            "tslib@2.8.1"
+          ],
+          "Locations": [
+            {
+              "StartLine": 498,
+              "EndLine": 510
+            }
+          ],
+          "AnalyzedBy": "npm"
+        },
+        {
+          "ID": "@firebase/logger@0.5.1",
+          "Name": "@firebase/logger",
+          "Identifier": {
+            "PURL": "pkg:npm/%40firebase/logger@0.5.1",
+            "UID": "7e26f71bc666140a"
+          },
+          "Version": "0.5.1",
+          "Licenses": [
+            "Apache-2.0"
+          ],
+          "Indirect": true,
+          "Relationship": "indirect",
+          "DependsOn": [
+            "tslib@2.8.1"
+          ],
+          "Locations": [
+            {
+              "StartLine": 549,
+              "EndLine": 560
+            }
+          ],
+          "AnalyzedBy": "npm"
+        },
+        {
+          "ID": "@firebase/logger@0.5.2",
+          "Name": "@firebase/logger",
+          "Identifier": {
+            "PURL": "pkg:npm/%40firebase/logger@0.5.2",
+            "UID": "6c4ef859d6206a17"
+          },
+          "Version": "0.5.2",
+          "Licenses": [
+            "Apache-2.0"
+          ],
+          "Indirect": true,
+          "Relationship": "indirect",
+          "DependsOn": [
+            "tslib@2.8.1"
+          ],
+          "Locations": [
+            {
+              "StartLine": 511,
+              "EndLine": 522
+            }
+          ],
+          "AnalyzedBy": "npm"
+        },
+        {
+          "ID": "@firebase/util@1.15.1",
+          "Name": "@firebase/util",
+          "Identifier": {
+            "PURL": "pkg:npm/%40firebase/util@1.15.1",
+            "UID": "6b04e55a7de7c822"
+          },
+          "Version": "1.15.1",
+          "Licenses": [
+            "Apache-2.0"
+          ],
+          "Indirect": true,
+          "Relationship": "indirect",
+          "DependsOn": [
+            "tslib@2.8.1"
+          ],
+          "Locations": [
+            {
+              "StartLine": 561,
+              "EndLine": 573
+            }
+          ],
+          "AnalyzedBy": "npm"
+        },
+        {
+          "ID": "@firebase/util@1.15.3",
+          "Name": "@firebase/util",
+          "Identifier": {
+            "PURL": "pkg:npm/%40firebase/util@1.15.3",
+            "UID": "9e3139741c4268c0"
+          },
+          "Version": "1.15.3",
+          "Licenses": [
+            "Apache-2.0"
+          ],
+          "Indirect": true,
+          "Relationship": "indirect",
+          "DependsOn": [
+            "tslib@2.8.1"
+          ],
+          "Locations": [
+            {
+              "StartLine": 523,
+              "EndLine": 535
+            }
+          ],
+          "AnalyzedBy": "npm"
+        },
+        {
+          "ID": "idb@7.1.1",
+          "Name": "idb",
+          "Identifier": {
+            "PURL": "pkg:npm/idb@7.1.1",
+            "UID": "2a5e2035deaa629e"
+          },
+          "Version": "7.1.1",
+          "Licenses": [
+            "ISC"
+          ],
+          "Indirect": true,
+          "Relationship": "indirect",
+          "Locations": [
+            {
+              "StartLine": 616,
+              "EndLine": 621
+            }
+          ],
+          "AnalyzedBy": "npm"
+        },
+        {
+          "ID": "tslib@2.8.1",
+          "Name": "tslib",
+          "Identifier": {
+            "PURL": "pkg:npm/tslib@2.8.1",
+            "UID": "5a128c2723e00ea7"
+          },
+          "Version": "2.8.1",
+          "Licenses": [
+            "0BSD"
+          ],
+          "Indirect": true,
+          "Relationship": "indirect",
+          "Locations": [
+            {
+              "StartLine": 622,
+              "EndLine": 627
+            }
+          ],
+          "AnalyzedBy": "npm"
+        }
+      ]
+    },
+    {
+      "Target": "Dockerfile",
+      "Class": "config",
+      "Type": "dockerfile",
+      "MisconfSummary": {
+        "Successes": 20,
+        "Failures": 0
+      }
+    },
+    {
+      "Target": "deploy/Dockerfile.update",
+      "Class": "config",
+      "Type": "dockerfile",
+      "MisconfSummary": {
+        "Successes": 20,
+        "Failures": 0
+      }
+    }
+  ]
+}
