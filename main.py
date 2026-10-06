@@ -1385,8 +1385,8 @@ async def new_chat(request: Request):
     title = (await _json_body(request)).get("title")
     try:
         chat = await _repo().create_chat(_owner_of(session), title if isinstance(title, str) else "New chat")
-    except docstore.ChatLimitError as e:
-        return _error(str(e), 400)
+    except docstore.ChatLimitError:
+        return _error(f"You can keep up to {docstore.max_chats()} chats. Delete one first.", 400)
     return {"chat": chat}
 
 
@@ -1476,7 +1476,7 @@ async def turnstile(request: Request):
     for this network, that a human passed - guests need it before uploading or asking."""
     keys = _turnstile()
     if keys is None:
-        return _error("The check is not configured on this server.", 503)
+        return _error("The check is not configured on this server.", 404)
     if limited := await _rate_limited(request, "login"):
         return limited
     token = (await _json_body(request)).get("token")
