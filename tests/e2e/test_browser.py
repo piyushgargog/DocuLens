@@ -283,14 +283,16 @@ def test_login_opens_a_dialog_with_the_google_button(server, make_page):
     assert errors == []
 
 
-def test_signed_in_users_get_a_chat_sidebar_with_their_latest_chat_open(server, make_page):
+def test_signed_in_users_get_a_chat_sidebar_and_start_on_a_fresh_page(server, make_page):
     page, errors = make_page()
     fake_me(page, USER_ME)
     state = fake_chats_api(page)
     page.goto(server)
     page.locator(".chat-item").first.wait_for()
     assert page.locator(".chat-item").count() == 2
-    assert page.locator(".chat-item.active .chat-open").inner_text() == "How many attention heads?"
+    assert page.locator(".chat-item.active").count() == 0  # a visit never reopens the last chat
+    assert page.locator(".msg", has_text="Eight heads").count() == 0
+    page.locator(".chat-item", has_text="How many attention heads?").locator(".chat-open").click()
     page.locator(".msg", has_text="Eight heads").first.wait_for()
     page.locator(".chat-item", has_text="Dropout settings").locator(".chat-open").click()
     page.locator(".msg", has_text="0.1").first.wait_for()

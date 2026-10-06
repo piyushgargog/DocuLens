@@ -1205,12 +1205,9 @@ function renderConversation(history) {
   const docs = !data.error && data.documents ? data.documents : [];
   if (docs.length) renderDocuments(docs);
   if (me && me.user) {
-    // Signed in: the sidebar lists every saved chat; open the most recent one.
+    // Signed in: the sidebar lists every saved chat, but a visit starts fresh;
+    // nothing is reopened until the user picks a chat.
     await loadChats();
-    if (chats.length && !busy) {
-      await openChat(chats[0].id, { quiet: true });
-      return;
-    }
     if (docs.length) {
       showView("chat");
       addNote("Your documents are ready. Ask anything about them.");
@@ -1332,7 +1329,7 @@ async function deleteChat(chat) {
   showToast("Chat deleted");
 }
 
-async function openChat(id, { quiet = false } = {}) {
+async function openChat(id) {
   if (busy) {
     showToast("Wait for the answer to finish first.");
     return;
@@ -1349,7 +1346,7 @@ async function openChat(id, { quiet = false } = {}) {
   if (loadedDocs.length === 0) addNote("Add a document to keep asking in this chat.");
   if (lastQuestion) scrollToStart(lastQuestion, false);
   renderChats();
-  if (!quiet) questionInput.focus();
+  questionInput.focus();
 }
 
 /** A fresh conversation: nothing is saved until the first question is asked. */
