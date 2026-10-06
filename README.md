@@ -5,7 +5,7 @@ documents you upload. Answers come only from the documents, and every answer
 shows the exact page and passage it is based on. If the documents don't
 contain the answer, it says so instead of guessing.
 
-**Live:** https://doculens.duckdns.org — **Latest release:** v4.0.0-beta.1 (pre-release)
+**Live:** https://doculens.duckdns.org — **Latest release:** v4.0.0-beta.2 (pre-release)
 
 ## Key features
 
