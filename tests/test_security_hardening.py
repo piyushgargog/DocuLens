@@ -792,7 +792,7 @@ def test_turnstile_endpoint_only_trusts_cloudflares_verdict(signin_on, monkeypat
     script_src = next(d for d in csp.split(";") if d.strip().startswith("script-src")).split()
     from urllib.parse import urlsplit
 
-    assert "challenges.cloudflare.com" in {urlsplit(source).hostname for source in script_src}
+    assert any(urlsplit(source).hostname == "challenges.cloudflare.com" for source in script_src)
 
 
 def test_turnstile_off_means_no_gate_and_no_csp_change(signin_on, monkeypatch):
