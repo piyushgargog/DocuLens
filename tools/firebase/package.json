@@ -6,7 +6,7 @@
     "build": "esbuild entry.js --bundle --minify --format=iife --target=es2020 --legal-comments=none --outfile=../../static/firebase-auth.js"
   },
   "dependencies": {
-    "@firebase/app": "^0.14.0",
+    "@firebase/app": "^0.16.2",
     "@firebase/auth": "^1.11.0"
   },
   "devDependencies": {
