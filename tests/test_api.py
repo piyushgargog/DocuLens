@@ -248,9 +248,9 @@ def test_page_shows_the_same_version_as_the_app():
 
     html = (main.STATIC_DIR / "index.html").read_text(encoding="utf-8")
     found = (
-        re.findall(r"\?v=([\d.]+)", html)
-        + re.findall(r"releases/tag/v([\d.]+)", html)
-        + re.findall(r">v([\d.]+)<", html)
+        re.findall(r"\?v=([\w.-]+)", html)
+        + re.findall(r"releases/tag/v([\w.-]+)", html)
+        + re.findall(r">v([\w.-]+)<", html)
     )
     # Every version string in the page (asset ?v=, release links, badge labels)
     # must equal APP_VERSION; the exact count grows as more badges are added.
