@@ -1,7 +1,7 @@
 # Minimum versions sit above every published advisory known on 2026-10-05
 # (OSV Scanner / pip-audit). torch is deliberately NOT listed: PyPI's Linux wheel bundles
 # CUDA libraries, so the Dockerfile and CI install `torch>=2.13.0` from PyTorch's CPU index first.
-fastapi>=0.141.1
+fastapi>=0.142.2
 uvicorn[standard]>=0.54.0
 python-multipart>=0.0.32
 pymupdf>=1.28.2
