@@ -113,6 +113,30 @@ def test_resilient_store_falls_back_when_redis_is_down():
     run(go())
 
 
+def test_writes_made_during_an_outage_survive_redis_coming_back():
+    healthy = fakeredis.FakeAsyncRedis()
+    primary = store.RedisStore("redis://unused", client=healthy)
+    resilient = store.ResilientStore(primary)
+
+    async def go():
+        primary._redis = _Down()
+        await resilient.set_json("session:s", {"docs": ["d1"]}, 60)
+        await resilient.set_bytes("blob:d1", b"vectors", 60)
+        await resilient.hset_json("chats:u", "c1", {"t": 1}, 60)
+        primary._redis = healthy  # Redis is back and the breaker has expired
+        resilient._skip_until = 0
+        await resilient.hset_json("chats:u", "c2", {"t": 2}, 60)
+        assert await resilient.get_json("session:s") == {"docs": ["d1"]}
+        assert await resilient.get_bytes("blob:d1") == b"vectors"
+        assert await resilient.hgetall_json("chats:u") == {"c1": {"t": 1}, "c2": {"t": 2}}
+        await resilient.delete("session:s")
+        await resilient.hdel("chats:u", "c1")
+        assert await resilient.get_json("session:s") is None
+        assert await resilient.hgetall_json("chats:u") == {"c2": {"t": 2}}
+
+    run(go())
+
+
 def test_resilient_store_skips_a_down_redis_after_the_first_failure():
     calls = []
 

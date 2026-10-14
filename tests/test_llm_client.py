@@ -307,7 +307,7 @@ def test_chain_follows_the_configured_order_and_skips_providers_without_keys(mon
     import providers
 
     monkeypatch.setenv("LLM_PROVIDERS", "nvidia,huggingface,groq")
-    assert [r.label for r in providers.routes()] == ["NVIDIA", "Groq"]  # no HF_TOKEN
+    assert [r.label for r in providers.routes()] == ["NVIDIA", "NVIDIA", "Groq"]  # Ultra + 20b; no HF_TOKEN
 
 
 def test_rate_limited_provider_hands_over_and_is_skipped_next_time(monkeypatch, three_providers):
@@ -340,7 +340,7 @@ def test_bad_key_on_one_provider_does_not_stop_the_answer(monkeypatch, three_pro
         return _reply("from nvidia")
 
     monkeypatch.setattr(llm_client.requests, "post", fake_post)
-    assert llm_client.answered_by(llm_client.ask("q?", [])) == {"provider": "NVIDIA", "model": "openai/gpt-oss-20b"}
+    assert llm_client.answered_by(llm_client.ask("q?", [])) == {"provider": "NVIDIA", "model": "nvidia/nemotron-3-ultra-550b-a55b"}
 
 
 def test_timeout_fails_over(monkeypatch, three_providers):
@@ -430,7 +430,7 @@ def test_status_names_providers_without_revealing_keys(monkeypatch, three_provid
     import providers
 
     status = providers.status()
-    assert [s["provider"] for s in status] == ["Groq", "OpenRouter", "NVIDIA"]
+    assert [s["provider"] for s in status] == ["Groq", "OpenRouter", "NVIDIA", "NVIDIA"]
     assert all(s["state"] == "ready" for s in status)
     assert "k-" not in repr(status) and "k-" not in repr(providers.routes())
 

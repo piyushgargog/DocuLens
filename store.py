@@ -162,10 +162,21 @@ class RedisStore:
 
     def __init__(self, url: str, client=None) -> None:
         import redis.asyncio as aioredis
+        from redis.asyncio.retry import Retry
+        from redis.backoff import ExponentialBackoff
+        from redis.exceptions import ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError
 
         # `client` lets tests inject a fake; production connects from the URL.
+        # Hosted Redis (Upstash) drops idle connections; without a retry the next
+        # command on that dead socket fails and the whole store degrades.
         self._redis = client or aioredis.from_url(
-            url, socket_connect_timeout=3, socket_timeout=3, health_check_interval=30
+            url,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+            socket_keepalive=True,
+            health_check_interval=30,
+            retry=Retry(ExponentialBackoff(cap=0.5, base=0.05), 2),
+            retry_on_error=[RedisConnectionError, RedisTimeoutError, ConnectionResetError],
         )
         self._rate_script = self._redis.register_script(_RATE_LUA)
 
@@ -280,35 +291,52 @@ class ResilientStore:
                 self._failed(e)
         return await getattr(self.fallback, name)(*args)
 
+    async def _read(self, name: str, *args):
+        """A read that also sees what was written locally during an outage: a
+        document uploaded while Redis was skipped lives only in the fallback, and
+        without this it vanished once Redis came back ("No document is loaded")."""
+        value = await self._call(name, *args)
+        if value is None:
+            return await getattr(self.fallback, name)(*args)
+        return value
+
+    async def _both(self, name: str, *args):
+        """Deletes go to the fallback too, so a stale outage copy can't resurface."""
+        await getattr(self.fallback, name)(*args)
+        return await self._call(name, *args)
+
     async def get_json(self, key):
-        return await self._call("get_json", key)
+        return await self._read("get_json", key)
 
     async def set_json(self, key, value, ttl):
         return await self._call("set_json", key, value, ttl)
 
     async def pop_json(self, key):
-        return await self._call("pop_json", key)
+        local = await self.fallback.pop_json(key)
+        value = await self._call("pop_json", key)
+        return local if value is None else value
 
     async def delete(self, key):
-        return await self._call("delete", key)
+        return await self._both("delete", key)
 
     async def set_bytes(self, key, data, ttl):
         return await self._call("set_bytes", key, data, ttl)
 
     async def get_bytes(self, key):
-        return await self._call("get_bytes", key)
+        return await self._read("get_bytes", key)
 
     async def delete_bytes(self, keys):
-        return await self._call("delete_bytes", keys)
+        return await self._both("delete_bytes", keys)
 
     async def hset_json(self, key, field, value, ttl):
         return await self._call("hset_json", key, field, value, ttl)
 
     async def hgetall_json(self, key):
-        return await self._call("hgetall_json", key)
+        local = await self.fallback.hgetall_json(key)
+        return {**local, **await self._call("hgetall_json", key)}
 
     async def hdel(self, key, field):
-        return await self._call("hdel", key, field)
+        return await self._both("hdel", key, field)
 
     async def rate_hit(self, key, limits):
         return await self._call("rate_hit", key, limits)

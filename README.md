@@ -5,7 +5,7 @@ documents you upload. Answers come only from the documents, and every answer
 shows the exact page and passage it is based on. If the documents don't
 contain the answer, it says so instead of guessing.
 
-**Live:** https://doculens.duckdns.org — **Latest release:** v4.0.0-beta.2 (pre-release)
+**Live:** https://doculens.duckdns.org — **Latest release:** v4.0.0
 
 ## Key features
 
@@ -70,7 +70,7 @@ Set at least one provider key in `.env`. Each extra key adds a fallback.
 |---|---|---|
 | `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, `HF_TOKEN` | empty | Provider keys (`LLM_API_KEY` still works as the Groq key) |
 | `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `COHERE_API_KEY`, `OPENAI_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `XAI_API_KEY`, `TOGETHER_API_KEY` | empty | More providers; add the name to `LLM_PROVIDERS` |
-| `LLM_PROVIDERS` | `groq,openrouter,nvidia,huggingface` | Failover order |
+| `LLM_PROVIDERS` | `groq,nvidia,openrouter,huggingface` | Failover order |
 | `<NAME>_MODEL`, `<NAME>_BASE_URL` | per provider | Override a provider's model or endpoint; `<NAME>_MODEL` may list several models (comma-separated), each becomes a route |
 | `LLM_ROUTES` | empty | JSON list for any other endpoint or model family (`api`: openai/anthropic/gemini/cohere); see `providers.py` |
 | `CHUNKER` | `structured` | `char` restores the fixed character window |
