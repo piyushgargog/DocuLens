@@ -1,0 +1,5 @@
+10027	IGNORE	(Suspicious comments: ordinary words in static JS comments, no secrets or hidden endpoints)
+10049	IGNORE	(Storable but non-cacheable: informational, API responses are deliberately not cached)
+10202	IGNORE	(Anti-CSRF tokens: state-changing calls are protected by the Origin guard and a SameSite __Host- cookie)
+90004	IGNORE	(COEP: require-corp would block the Firebase sign-in popup and the Turnstile iframe)
+90005	IGNORE	(Sec-Fetch-Dest: a request header the browser sends; the scanner's own requests lack it)

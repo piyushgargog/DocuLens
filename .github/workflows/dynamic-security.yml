@@ -40,4 +40,5 @@ jobs:
           target: http://127.0.0.1:8000
           fail_action: true
           allow_issue_writing: false
+          rules_file_name: .zap/rules.tsv  # reviewed false positives, each with its reason
           cmd_options: "-a"
