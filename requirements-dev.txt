@@ -4,6 +4,6 @@ httpx>=0.28.1
 # Browser end-to-end tests (opt-in: DOCULENS_E2E=1 pytest tests/e2e)
 playwright>=1.63.0
 fakeredis[lua]>=2.26.0
-pygments>=2.20.0
+pygments>=2.21.0
 hypothesis>=6.100
 schemathesis>=4.29
