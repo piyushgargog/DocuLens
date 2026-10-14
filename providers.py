@@ -8,7 +8,7 @@ small (Groq's is 200k tokens a day per model), so one provider alone runs out;
 with a chain, the app keeps answering.
 
 A provider is used only when its API key is set. `LLM_PROVIDERS` sets the
-order (default: groq, openrouter, nvidia, huggingface), `<NAME>_MODEL` and
+order (default: groq, nvidia, openrouter, huggingface), `<NAME>_MODEL` and
 `<NAME>_BASE_URL` override the defaults, and `LLM_FALLBACK_MODEL` adds a
 second Groq model at the end of the chain (each Groq model has its own
 quota). The older single-provider settings (`LLM_API_KEY`, `LLM_BASE_URL`,
@@ -53,7 +53,7 @@ import llm_adapters
 # in testing on 2026-09-29 its free tier was overloaded (503) or rate
 # limited on most calls, so it could not be verified against the
 # prompt-injection tests the other providers pass.
-DEFAULT_ORDER = "groq,openrouter,nvidia,huggingface"
+DEFAULT_ORDER = "groq,nvidia,openrouter,huggingface"
 
 KNOWN: dict[str, dict[str, Any]] = {
     # Google AI Studio (Gemini API) through its OpenAI-compatible endpoint.
@@ -85,8 +85,9 @@ KNOWN: dict[str, dict[str, Any]] = {
     "nvidia": {
         "label": "NVIDIA",
         "base_url": "https://integrate.api.nvidia.com/v1",
-        # gpt-oss-120b reached end of life on NVIDIA's API on 2026-09-03.
-        "model": "openai/gpt-oss-20b",
+        # Nemotron 3 Ultra is the first fallback (cites well, streams its
+        # reasoning); gpt-oss-20b backs it up. gpt-oss-120b left NVIDIA on 2026-09-03.
+        "model": "nvidia/nemotron-3-ultra-550b-a55b,openai/gpt-oss-20b",
         "keys": ("NVIDIA_API_KEY",),
     },
     "huggingface": {

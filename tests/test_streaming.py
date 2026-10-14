@@ -167,7 +167,7 @@ def test_status_lists_providers_without_secrets(client, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["version"] == main.APP_VERSION
-    assert [p["provider"] for p in body["providers"]] == ["Groq", "NVIDIA"]
+    assert [p["provider"] for p in body["providers"]] == ["Groq", "NVIDIA", "NVIDIA"]
     assert "secret" not in response.text and "https://" not in response.text
 
 
